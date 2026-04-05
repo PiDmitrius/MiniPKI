@@ -20,9 +20,16 @@
 #include <string.h>
 #include "minipki.h"
 
-/* Embed a small self-signed RSA test certificate (DER, generated offline).
- * For now we generate one at runtime using OpenSSL CLI via the test harness,
- * or use a hardcoded one. Let's generate at runtime for flexibility. */
+/* Cross-platform temp path for generated test cert */
+#ifdef _WIN32
+#define TEST_CERT_PATH "test_minipki_root.der"
+#define DEV_NULL "NUL"
+#define REDIR_NULL "2>NUL"
+#else
+#define TEST_CERT_PATH "/tmp/test_minipki_root.der"
+#define DEV_NULL "/dev/null"
+#define REDIR_NULL "2>/dev/null"
+#endif
 
 static int g_tests_passed = 0;
 static int g_tests_failed = 0;
@@ -75,9 +82,9 @@ static int gen_self_signed( const char * path )
 {
     char cmd[512];
     snprintf( cmd, sizeof( cmd ),
-              "openssl req -x509 -newkey rsa:2048 -keyout /dev/null "
-              "-nodes -days 365 -subj '/CN=Test Root CA/O=MiniPKI' "
-              "-outform DER -out %s 2>/dev/null", path );
+              "openssl req -x509 -newkey rsa:2048 -keyout %s "
+              "-nodes -days 365 -subj \"/CN=Test Root CA/O=MiniPKI\" "
+              "-outform DER -out %s %s", DEV_NULL, path, REDIR_NULL );
     return system( cmd );
 }
 
@@ -114,7 +121,7 @@ static int test_cert_parse( void )
 {
     MP_CTX ctx = NULL;
     MP_CERT cert = NULL;
-    const char * certpath = "/tmp/test_minipki_root.der";
+    const char * certpath = TEST_CERT_PATH;
     uint8_t * data = NULL;
     size_t datalen = 0;
 
@@ -210,7 +217,7 @@ static int test_verify( void )
     MP_CERT cert = NULL;
     MP_STORE store = NULL;
     MP_CHAIN chain = NULL;
-    const char * certpath = "/tmp/test_minipki_root.der";
+    const char * certpath = TEST_CERT_PATH;
     uint8_t * data = NULL;
     size_t datalen = 0;
 

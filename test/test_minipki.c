@@ -11,7 +11,8 @@
  *  7:  mp_cert_der round-trip
  *  8:  mp_store + mp_verify (self-signed root)
  *  9:  mp_chain accessors
- *  10: Error handling (NULL args)
+ *  10: CRL parse + mp_crl_verify (good sig & tampered sig)
+ *  11: Error handling (NULL args)
  *
  * Pure C consumer of minipki.h
  */
@@ -268,9 +269,124 @@ static int test_verify( void )
     return 0;
 }
 
+#ifndef _WIN32
+/* Generate a CA self-signed cert + its empty CRL (DER). Writes ca_der and crl_der. */
+static int gen_ca_and_crl( const char * ca_der, const char * crl_der )
+{
+    /* Minimal OpenSSL CA layout: key, self-signed cert, empty index/serial/crlnumber,
+     * config file, then `openssl ca -gencrl`. */
+    char cmd[ 4096 ];
+    int n = snprintf( cmd, sizeof( cmd ),
+        "D=/tmp/mp_crl_test_$$ && rm -rf \"$D\" && mkdir -p \"$D/db\" && "
+        "touch \"$D/db/index.txt\" && echo 01 > \"$D/db/serial\" && echo 01 > \"$D/db/crlnumber\" && "
+        "openssl req -x509 -newkey rsa:2048 -keyout \"$D/ca.key\" -out \"$D/ca.pem\" "
+        "-nodes -days 365 -subj '/CN=Test CRL CA' "
+        "-addext 'keyUsage=critical,cRLSign,keyCertSign' "
+        "-addext 'basicConstraints=critical,CA:TRUE' %s && "
+        "{ echo '[ca]'; echo 'default_ca=root'; echo '[root]'; "
+        "echo \"dir=$D\"; echo \"database=$D/db/index.txt\"; "
+        "echo \"new_certs_dir=$D/db\"; echo \"certificate=$D/ca.pem\"; "
+        "echo \"private_key=$D/ca.key\"; echo \"serial=$D/db/serial\"; "
+        "echo \"crlnumber=$D/db/crlnumber\"; echo 'default_md=sha256'; "
+        "echo 'default_crl_days=30'; echo 'policy=pol'; "
+        "echo 'crl_extensions=crl_ext'; echo '[pol]'; "
+        "echo 'commonName=supplied'; echo '[crl_ext]'; "
+        "echo 'authorityKeyIdentifier=keyid:always'; } > \"$D/ca.cnf\" && "
+        "openssl ca -config \"$D/ca.cnf\" -gencrl -out \"$D/crl.pem\" %s && "
+        "openssl crl -in \"$D/crl.pem\" -outform DER -out '%s' %s && "
+        "openssl x509 -in \"$D/ca.pem\" -outform DER -out '%s' %s && "
+        "rm -rf \"$D\"",
+        REDIR_NULL, REDIR_NULL, crl_der, REDIR_NULL, ca_der, REDIR_NULL );
+    if( n < 0 || n >= (int)sizeof( cmd ) )
+        return -1;
+    return system( cmd );
+}
+
+static int test_crl_verify( void )
+{
+    const char * ca_path  = "/tmp/test_minipki_crl_ca.der";
+    const char * crl_path = "/tmp/test_minipki_crl.der";
+    MP_CTX  ctx     = NULL;
+    MP_CERT ca      = NULL;
+    MP_CRL  crl     = NULL;
+    uint8_t * ca_buf = NULL, * crl_buf = NULL;
+    size_t    ca_len = 0,    crl_len  = 0;
+
+    printf( "\n[5] CRL verify\n" );
+
+    if( gen_ca_and_crl( ca_path, crl_path ) != 0 )
+    {
+        fprintf( stderr, "FAIL: could not generate CA + CRL fixtures\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    ca_buf  = read_file( ca_path,  &ca_len );
+    crl_buf = read_file( crl_path, &crl_len );
+    if( !ca_buf || !crl_buf )
+    {
+        fprintf( stderr, "FAIL: could not read fixtures\n" );
+        g_tests_failed++;
+        free( ca_buf ); free( crl_buf );
+        return 1;
+    }
+
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+    CHECK( mp_cert_parse( ctx, ca_buf, ca_len, &ca ), "mp_cert_parse(CA)" );
+    CHECK( mp_crl_parse( ctx, crl_buf, crl_len, &crl ), "mp_crl_parse" );
+
+    /* Good signature */
+    EXPECT( mp_crl_verify( crl, ca ), MP_OK, "mp_crl_verify(valid)" );
+
+    /* AKI should be present because ca.cnf enables authorityKeyIdentifier */
+    const uint8_t * aki;
+    size_t akilen;
+    CHECK( mp_crl_aki( crl, &aki, &akilen ), "mp_crl_aki" );
+    printf( "  CRL AKI: %.*s\n", (int)akilen, aki );
+    if( akilen == 0 )
+    {
+        fprintf( stderr, "FAIL: expected non-empty AKI\n" );
+        g_tests_failed++;
+    }
+    else
+    {
+        g_tests_passed++;
+    }
+
+    /* Empty CRL from plain `openssl ca -gencrl` has no IDP extension */
+    int32_t has_idp = -1;
+    CHECK( mp_crl_has_idp( crl, &has_idp ), "mp_crl_has_idp" );
+    if( has_idp != 0 )
+    {
+        fprintf( stderr, "FAIL: expected no IDP, got %d\n", has_idp );
+        g_tests_failed++;
+    }
+    else
+    {
+        printf( "  OK: no IDP as expected\n" );
+        g_tests_passed++;
+    }
+
+    CHECK( mp_crl_close( crl ), "mp_crl_close" );
+
+    /* Tamper: flip a byte near the end (signature region) and re-parse */
+    if( crl_len > 16 )
+        crl_buf[ crl_len - 8 ] ^= 0xFF;
+    CHECK( mp_crl_parse( ctx, crl_buf, crl_len, &crl ), "mp_crl_parse(tampered)" );
+    EXPECT( mp_crl_verify( crl, ca ), MP_ERR_VERIFY,
+            "mp_crl_verify(tampered) → MP_ERR_VERIFY" );
+
+    CHECK( mp_crl_close( crl ), "mp_crl_close" );
+    CHECK( mp_cert_close( ca ), "mp_cert_close" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    free( ca_buf );
+    free( crl_buf );
+    return 0;
+}
+#endif /* !_WIN32 */
+
 static int test_error_handling( void )
 {
-    printf( "\n[5] Error handling\n" );
+    printf( "\n[6] Error handling\n" );
 
     EXPECT( mp_open( 999, NULL ), MP_ERR_INVALID_ARG, "mp_open(bad type)" );
     EXPECT( mp_close( NULL ), MP_ERR_INVALID_ARG, "mp_close(NULL)" );
@@ -292,6 +408,9 @@ int main( void )
     rc |= test_context();
     rc |= test_cert_parse();
     rc |= test_verify();
+#ifndef _WIN32
+    rc |= test_crl_verify();
+#endif
     rc |= test_error_handling();
 
     printf( "\n=== Results: %d passed, %d failed ===\n",

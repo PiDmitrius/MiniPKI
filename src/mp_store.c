@@ -84,11 +84,26 @@ MP_API int32_t mp_store_add_crl( MP_STORE store,
         return MP_ERR_OPENSSL;
     }
 
-    /* Enable CRL checking */
-    X509_STORE_set_flags( store->store,
-                          X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL );
-
     X509_CRL_free( c );
+    return MP_OK;
+}
+
+MP_API int32_t mp_store_set_crl_check( MP_STORE store, int32_t enable )
+{
+    unsigned long flags = X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL;
+    if( !store )
+        return MP_ERR_INVALID_ARG;
+
+    if( enable )
+    {
+        X509_STORE_set_flags( store->store, flags );
+    }
+    else
+    {
+        X509_VERIFY_PARAM * p = X509_STORE_get0_param( store->store );
+        if( p )
+            X509_VERIFY_PARAM_clear_flags( p, flags );
+    }
     return MP_OK;
 }
 
@@ -119,6 +134,21 @@ MP_API int32_t mp_verify( MP_STORE store, MP_CERT cert,
     if( rc != 1 )
     {
         int err = X509_STORE_CTX_get_error( vctx );
+        int depth = X509_STORE_CTX_get_error_depth( vctx );
+        const char * msg = X509_verify_cert_error_string( err );
+
+        store->last_err_code = err;
+        store->last_err_depth = depth;
+        if( msg )
+        {
+            strncpy( store->last_err_msg, msg, sizeof( store->last_err_msg ) - 1 );
+            store->last_err_msg[sizeof( store->last_err_msg ) - 1] = '\0';
+        }
+        else
+        {
+            store->last_err_msg[0] = '\0';
+        }
+
         X509_STORE_CTX_free( vctx );
 
         switch( err )
@@ -177,6 +207,24 @@ MP_API int32_t mp_verify( MP_STORE store, MP_CERT cert,
     return MP_OK;
 }
 
+MP_API int32_t mp_verify_last_error( MP_STORE store,
+                                     int32_t * code, int32_t * depth,
+                                     const uint8_t ** msg, size_t * msglen )
+{
+    if( !store )
+        return MP_ERR_INVALID_ARG;
+
+    if( code )
+        *code = store->last_err_code;
+    if( depth )
+        *depth = store->last_err_depth;
+    if( msg )
+        *msg = (const uint8_t *)store->last_err_msg;
+    if( msglen )
+        *msglen = strlen( store->last_err_msg );
+    return MP_OK;
+}
+
 /* ── Chain ───────────────────────────────────────────────── */
 
 MP_API int32_t mp_chain_count( MP_CHAIN chain, size_t * count )
@@ -213,6 +261,27 @@ MP_API int32_t mp_chain_close( MP_CHAIN chain )
         OPENSSL_free( chain->certs[i].subject );
         OPENSSL_free( chain->certs[i].issuer );
         OPENSSL_free( chain->certs[i].serial );
+        free( chain->certs[i].ski );
+        free( chain->certs[i].aki );
+        free( chain->certs[i].key_algorithm );
+        free( chain->certs[i].key_curve );
+        OPENSSL_free( chain->certs[i].subject_name_der );
+        OPENSSL_free( chain->certs[i].issuer_name_der );
+        for( size_t j = 0; j < chain->certs[i].eku_count; j++ )
+            free( chain->certs[i].eku_oids[j] );
+        free( chain->certs[i].eku_oids );
+        for( size_t j = 0; j < chain->certs[i].san_count; j++ )
+            free( chain->certs[i].san_entries[j] );
+        free( chain->certs[i].san_entries );
+        for( size_t j = 0; j < chain->certs[i].aia_count; j++ )
+            free( chain->certs[i].aia_urls[j] );
+        free( chain->certs[i].aia_urls );
+        for( size_t j = 0; j < chain->certs[i].ocsp_count; j++ )
+            free( chain->certs[i].ocsp_urls[j] );
+        free( chain->certs[i].ocsp_urls );
+        for( size_t j = 0; j < chain->certs[i].cdp_count; j++ )
+            free( chain->certs[i].cdp_urls[j] );
+        free( chain->certs[i].cdp_urls );
     }
 
     free( chain->certs );

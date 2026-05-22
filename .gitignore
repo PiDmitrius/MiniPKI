@@ -4,3 +4,11 @@ build/out/
 *.dylib
 *.dll
 *.lib
+
+# Go build artefacts (project bins live at repo root after `go build ./cmd/...`)
+/certget
+/certview
+
+# Local databases / review notes
+*.db
+REVIEW_*.md

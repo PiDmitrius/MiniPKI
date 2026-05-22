@@ -44,7 +44,35 @@ MP_API int32_t mp_crl_close( MP_CRL crl )
 
     X509_CRL_free( crl->crl );
     OPENSSL_free( crl->issuer );
+    OPENSSL_free( crl->issuer_name_der );
+    free( crl->aki );
     free( crl );
+    return MP_OK;
+}
+
+MP_API int32_t mp_crl_issuer_name_der( MP_CRL crl,
+                                       const uint8_t ** der, size_t * derlen )
+{
+    if( !crl || !der || !derlen )
+        return MP_ERR_INVALID_ARG;
+
+    if( !crl->issuer_name_der )
+    {
+        X509_NAME * name = X509_CRL_get_issuer( crl->crl );
+        if( !name )
+            return MP_ERR_OPENSSL;
+
+        uint8_t * buf = NULL;
+        int len = i2d_X509_NAME( name, &buf );
+        if( len <= 0 )
+            return MP_ERR_OPENSSL;
+
+        crl->issuer_name_der = buf;
+        crl->issuer_name_derlen = (size_t)len;
+    }
+
+    *der = crl->issuer_name_der;
+    *derlen = crl->issuer_name_derlen;
     return MP_OK;
 }
 
@@ -56,8 +84,7 @@ MP_API int32_t mp_crl_issuer( MP_CRL crl,
 
     if( !crl->issuer )
     {
-        crl->issuer = X509_NAME_oneline( X509_CRL_get_issuer( crl->crl ),
-                                          NULL, 0 );
+        crl->issuer = format_name( X509_CRL_get_issuer( crl->crl ) );
         if( !crl->issuer )
             return MP_ERR_OPENSSL;
     }
@@ -107,4 +134,78 @@ MP_API int32_t mp_crl_is_revoked( MP_CRL crl, MP_CERT cert,
     int rc = X509_CRL_get0_by_cert( crl->crl, &rev, cert->x509 );
     *result = ( rc == 1 ) ? 1 : 0;
     return MP_OK;
+}
+
+MP_API int32_t mp_crl_revoked_count( MP_CRL crl, size_t * count )
+{
+    STACK_OF(X509_REVOKED) * rev;
+    if( !crl || !count )
+        return MP_ERR_INVALID_ARG;
+
+    rev = X509_CRL_get_REVOKED( crl->crl );
+    *count = rev ? (size_t)sk_X509_REVOKED_num( rev ) : 0;
+    return MP_OK;
+}
+
+MP_API int32_t mp_crl_aki( MP_CRL crl,
+                           const uint8_t ** out, size_t * outlen )
+{
+    if( !crl || !out || !outlen )
+        return MP_ERR_INVALID_ARG;
+
+    if( !crl->aki )
+    {
+        AUTHORITY_KEYID * akid = X509_CRL_get_ext_d2i( crl->crl,
+                                                      NID_authority_key_identifier,
+                                                      NULL, NULL );
+        if( akid )
+        {
+            if( akid->keyid )
+                crl->aki = mp_octet_to_hex( akid->keyid );
+            AUTHORITY_KEYID_free( akid );
+        }
+    }
+
+    if( crl->aki )
+    {
+        *out = (const uint8_t *)crl->aki;
+        *outlen = strlen( crl->aki );
+    }
+    else
+    {
+        *out = (const uint8_t *)"";
+        *outlen = 0;
+    }
+    return MP_OK;
+}
+
+MP_API int32_t mp_crl_has_idp( MP_CRL crl, int32_t * has )
+{
+    if( !crl || !has )
+        return MP_ERR_INVALID_ARG;
+
+    *has = ( X509_CRL_get_ext_by_NID( crl->crl,
+                                      NID_issuing_distribution_point,
+                                      -1 ) >= 0 ) ? 1 : 0;
+    return MP_OK;
+}
+
+MP_API int32_t mp_crl_verify( MP_CRL crl, MP_CERT issuer )
+{
+    EVP_PKEY * pkey;
+    int rc;
+
+    if( !crl || !issuer )
+        return MP_ERR_INVALID_ARG;
+
+    pkey = X509_get0_pubkey( issuer->x509 );
+    if( !pkey )
+        return MP_ERR_OPENSSL;
+
+    rc = X509_CRL_verify( crl->crl, pkey );
+    if( rc == 1 )
+        return MP_OK;
+    if( rc == 0 )
+        return MP_ERR_VERIFY;
+    return MP_ERR_OPENSSL;
 }

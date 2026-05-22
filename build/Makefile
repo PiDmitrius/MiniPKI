@@ -1,4 +1,4 @@
-.PHONY: all clean lib test
+.PHONY: all clean lib static test
 
 ROOT := ..
 
@@ -45,7 +45,7 @@ EXEEXT_windows-amd64  := .exe
 EXEEXT_windows-arm64  := .exe
 
 # MiniPKI source files
-MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c
+MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c
 
 # Object files for a target
 MP_OBJS = $(patsubst %.c,out/$(1)/%.o,$(MP_SRCS))
@@ -58,14 +58,18 @@ PLAT_LDFLAGS = -L$(OPENSSL_BASE)/$(1)/lib -lgost -lcrypto \
 
 # --- Output paths ---
 outlib  = out/$(1)/$(PFX_$(1))minipki$(EXT_$(1))
-outtest = out/$(1)/test_minipki$(EXEEXT_$(1))
+outstatic = out/$(1)/libminipki.a
+outtest   = out/$(1)/test_minipki$(EXEEXT_$(1))
 
-ALL_LIBS := $(foreach t,$(TARGETS),$(call outlib,$(t)))
-ALL_TESTS := $(foreach t,$(TARGETS),$(call outtest,$(t)))
+ALL_LIBS    := $(foreach t,$(TARGETS),$(call outlib,$(t)))
+ALL_STATICS := $(foreach t,$(TARGETS),$(call outstatic,$(t)))
+ALL_TESTS   := $(foreach t,$(TARGETS),$(call outtest,$(t)))
 
 all: lib
 
 lib: $(ALL_LIBS)
+
+static: $(ALL_STATICS)
 
 test: $(ALL_TESTS)
 
@@ -85,6 +89,10 @@ out/$(1)/test_minipki.o: $(ROOT)/test/test_minipki.c | out/$(1)
 	zig cc $$(CFLAGS) -Wno-error -target $$(ZIG_$(1)) \
 		-I$(ROOT)/include \
 		-c $$< -o $$@
+
+# Static library
+$(call outstatic,$(1)): $(call MP_OBJS,$(1))
+	zig ar rcs $$@ $$^
 
 # Shared library
 $(call outlib,$(1)): $(call MP_OBJS,$(1))

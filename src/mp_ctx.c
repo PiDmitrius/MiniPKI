@@ -1,11 +1,11 @@
 /* mp_ctx.c - Context management */
 #include "mp_internal.h"
+#include <stdio.h>
 
-/* External: gost-engine provider init (from libgost.a, BUILDING_PROVIDER_AS_LIBRARY) */
-extern int GOST_provider_init( const OSSL_CORE_HANDLE * handle,
-                               const OSSL_DISPATCH * in,
-                               const OSSL_DISPATCH ** out,
-                               void ** provctx );
+/* ENGINE API is deprecated in OpenSSL 3.x but still required for
+   GOST signature verification (provider mode does not handle
+   combined OIDs like id-tc26-signwithdigest-gost3410-2012-256). */
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 MP_API uint32_t mp_version( void )
 {
@@ -28,40 +28,48 @@ MP_API int32_t mp_open( int32_t type, MP_CTX * ctx )
 
     c->type = type;
 
-    /* Create isolated library context */
-    c->libctx = OSSL_LIB_CTX_new();
-    if( !c->libctx )
-    {
-        free( c );
-        return MP_ERR_OPENSSL;
-    }
-
-    /* Load default provider */
-    c->prov_default = OSSL_PROVIDER_load( c->libctx, "default" );
+    /* Load default provider into global context */
+    c->prov_default = OSSL_PROVIDER_load( NULL, "default" );
     if( !c->prov_default )
     {
-        OSSL_LIB_CTX_free( c->libctx );
         free( c );
         return MP_ERR_OPENSSL;
     }
 
-    /* Register and load GOST provider */
-    if( !OSSL_PROVIDER_add_builtin( c->libctx, "gost",
-                                     GOST_provider_init ) )
+    /* Load gost-engine as dynamic ENGINE — provides all GOST algorithms
+       (signatures, hashes, key management) and X509 verify support. */
+    const char * eng_path = getenv( "MINIPKI_GOST_ENGINE" );
+    if( eng_path && *eng_path )
     {
-        OSSL_PROVIDER_unload( c->prov_default );
-        OSSL_LIB_CTX_free( c->libctx );
-        free( c );
-        return MP_ERR_OPENSSL;
-    }
-
-    c->prov_gost = OSSL_PROVIDER_load( c->libctx, "gost" );
-    if( !c->prov_gost )
-    {
-        OSSL_PROVIDER_unload( c->prov_default );
-        OSSL_LIB_CTX_free( c->libctx );
-        free( c );
-        return MP_ERR_OPENSSL;
+        ENGINE_load_dynamic();
+        ENGINE * dyn = ENGINE_by_id( "dynamic" );
+        if( !dyn )
+        {
+            fprintf( stderr, "[minipki] ENGINE_by_id(dynamic) failed\n" );
+        }
+        else
+        {
+            if( !ENGINE_ctrl_cmd_string( dyn, "SO_PATH", eng_path, 0 ) )
+                fprintf( stderr, "[minipki] SO_PATH %s failed: %s\n",
+                         eng_path, ERR_error_string( ERR_get_error(), NULL ) );
+            if( !ENGINE_ctrl_cmd_string( dyn, "ID", "gost", 0 ) )
+                fprintf( stderr, "[minipki] ID gost failed\n" );
+            if( !ENGINE_ctrl_cmd_string( dyn, "LOAD", NULL, 0 ) )
+                fprintf( stderr, "[minipki] LOAD failed: %s\n",
+                         ERR_error_string( ERR_get_error(), NULL ) );
+            if( !ENGINE_init( dyn ) )
+            {
+                fprintf( stderr, "[minipki] ENGINE_init failed: %s\n",
+                         ERR_error_string( ERR_get_error(), NULL ) );
+                ENGINE_free( dyn );
+            }
+            else
+            {
+                ENGINE_set_default( dyn, ENGINE_METHOD_ALL );
+                c->eng_gost = dyn;
+                fprintf( stderr, "[minipki] gost engine loaded from %s\n", eng_path );
+            }
+        }
     }
 
     *ctx = c;
@@ -73,12 +81,13 @@ MP_API int32_t mp_close( MP_CTX ctx )
     if( !ctx )
         return MP_ERR_INVALID_ARG;
 
-    if( ctx->prov_gost )
-        OSSL_PROVIDER_unload( ctx->prov_gost );
+    if( ctx->eng_gost )
+    {
+        ENGINE_finish( ctx->eng_gost );
+        ENGINE_free( ctx->eng_gost );
+    }
     if( ctx->prov_default )
         OSSL_PROVIDER_unload( ctx->prov_default );
-    if( ctx->libctx )
-        OSSL_LIB_CTX_free( ctx->libctx );
 
     free( ctx );
     return MP_OK;

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -33,34 +35,35 @@ type handler struct {
 }
 
 type certJSON struct {
-	Subject      string   `json:"subject"`
-	Issuer       string   `json:"issuer"`
-	Serial       string   `json:"serial"`
-	SKI          string   `json:"ski,omitempty"`
-	AKI          string   `json:"aki,omitempty"`
-	NotBefore    string   `json:"not_before"`
-	NotAfter     string   `json:"not_after"`
-	IsCA         bool     `json:"is_ca"`
-	IsSelfSigned bool     `json:"is_self_signed"`
-	IsCrossSigned bool    `json:"is_cross_signed"`
-	Trusted      bool     `json:"trusted"`
-	KeyAlgorithm string   `json:"key_algorithm,omitempty"`
-	KeyBits      int      `json:"key_bits,omitempty"`
-	KeyCurve     string   `json:"key_curve,omitempty"`
-	KeyUsage     []string `json:"key_usage,omitempty"`
-	EKUs         []string `json:"ekus,omitempty"`
-	SANs         []string `json:"sans,omitempty"`
-	PathLen      int      `json:"path_len"`
-	AIAURLs      []string `json:"aia_urls,omitempty"`
-	OCSPURLs     []string `json:"ocsp_urls,omitempty"`
-	CDPURLs          []string       `json:"cdp_urls,omitempty"`
-	Revocation       *revJSON       `json:"revocation,omitempty"`
-	IssuedCRLs       []crlJSON      `json:"issued_crls,omitempty"`
-	IssuedOCSPs      []ocspJSON     `json:"issued_ocsps,omitempty"`
-	ThumbprintSHA1   string         `json:"thumbprint_sha1"`
-	ThumbprintSHA256 string    `json:"thumbprint_sha256"`
-	DER              string    `json:"der_b64,omitempty"`
-	Source           string    `json:"source,omitempty"`
+	Subject            string     `json:"subject"`
+	Issuer             string     `json:"issuer"`
+	Serial             string     `json:"serial"`
+	SKI                string     `json:"ski,omitempty"`
+	AKI                string     `json:"aki,omitempty"`
+	NotBefore          string     `json:"not_before"`
+	NotAfter           string     `json:"not_after"`
+	IsCA               bool       `json:"is_ca"`
+	IsSelfSigned       bool       `json:"is_self_signed"`
+	IsCrossSigned      bool       `json:"is_cross_signed"`
+	Trusted            bool       `json:"trusted"`
+	KeyAlgorithm       string     `json:"key_algorithm,omitempty"`
+	SignatureAlgorithm string     `json:"signature_algorithm,omitempty"`
+	KeyBits            int        `json:"key_bits,omitempty"`
+	KeyCurve           string     `json:"key_curve,omitempty"`
+	KeyUsage           []string   `json:"key_usage,omitempty"`
+	EKUs               []string   `json:"ekus,omitempty"`
+	SANs               []string   `json:"sans,omitempty"`
+	PathLen            int        `json:"path_len"`
+	AIAURLs            []string   `json:"aia_urls,omitempty"`
+	OCSPURLs           []string   `json:"ocsp_urls,omitempty"`
+	CDPURLs            []string   `json:"cdp_urls,omitempty"`
+	Revocation         *revJSON   `json:"revocation,omitempty"`
+	IssuedCRLs         []crlJSON  `json:"issued_crls,omitempty"`
+	IssuedOCSPs        []ocspJSON `json:"issued_ocsps,omitempty"`
+	ThumbprintSHA1     string     `json:"thumbprint_sha1"`
+	ThumbprintSHA256   string     `json:"thumbprint_sha256"`
+	DER                string     `json:"der_b64,omitempty"`
+	Source             string     `json:"source,omitempty"`
 }
 
 type ocspJSON struct {
@@ -159,31 +162,55 @@ func certToJSON(c *pki.CertInfo, source string) certJSON {
 		len(c.SubjectNameDER) > 0 &&
 		bytes.Equal(c.SubjectNameDER, c.IssuerNameDER)
 	return certJSON{
-		Subject:          c.Subject,
-		Issuer:           c.Issuer,
-		Serial:           c.Serial,
-		SKI:              c.SKI,
-		AKI:              c.AKI,
-		NotBefore:        c.NotBefore.Format(time.RFC3339),
-		NotAfter:         c.NotAfter.Format(time.RFC3339),
-		IsCA:             c.IsCA,
-		IsSelfSigned:     c.IsSelfSigned,
-		IsCrossSigned:    isCross,
-		KeyAlgorithm:     c.KeyAlgorithm,
-		KeyBits:          c.KeyBits,
-		KeyCurve:         c.KeyCurve,
-		KeyUsage:         decodeKeyUsage(c.KeyUsage),
-		EKUs:             c.EKUs,
-		SANs:             c.SANs,
-		PathLen:          c.PathLen,
-		AIAURLs:          c.AIAURLs,
-		OCSPURLs:         c.OCSPURLs,
-		CDPURLs:          c.CDPURLs,
-		ThumbprintSHA1:   strings.ToUpper(hex.EncodeToString(s1[:])),
-		ThumbprintSHA256: strings.ToUpper(hex.EncodeToString(s256[:])),
-		DER:              base64.StdEncoding.EncodeToString(c.DER),
-		Source:           source,
+		Subject:            c.Subject,
+		Issuer:             c.Issuer,
+		Serial:             c.Serial,
+		SKI:                c.SKI,
+		AKI:                c.AKI,
+		NotBefore:          c.NotBefore.Format(time.RFC3339),
+		NotAfter:           c.NotAfter.Format(time.RFC3339),
+		IsCA:               c.IsCA,
+		IsSelfSigned:       c.IsSelfSigned,
+		IsCrossSigned:      isCross,
+		KeyAlgorithm:       c.KeyAlgorithm,
+		SignatureAlgorithm: certSignatureAlgorithm(c.DER),
+		KeyBits:            c.KeyBits,
+		KeyCurve:           c.KeyCurve,
+		KeyUsage:           decodeKeyUsage(c.KeyUsage),
+		EKUs:               c.EKUs,
+		SANs:               c.SANs,
+		PathLen:            c.PathLen,
+		AIAURLs:            c.AIAURLs,
+		OCSPURLs:           c.OCSPURLs,
+		CDPURLs:            c.CDPURLs,
+		ThumbprintSHA1:     strings.ToUpper(hex.EncodeToString(s1[:])),
+		ThumbprintSHA256:   strings.ToUpper(hex.EncodeToString(s256[:])),
+		DER:                base64.StdEncoding.EncodeToString(c.DER),
+		Source:             source,
 	}
+}
+
+func certSignatureAlgorithm(der []byte) string {
+	var cert struct {
+		TBSCertificate     asn1.RawValue
+		SignatureAlgorithm pkix.AlgorithmIdentifier
+		SignatureValue     asn1.BitString
+	}
+	rest, err := asn1.Unmarshal(der, &cert)
+	if err != nil || len(rest) != 0 || len(cert.SignatureAlgorithm.Algorithm) == 0 {
+		if len(der) > 0 {
+			parseErr := err
+			if parseErr == nil && len(rest) != 0 {
+				parseErr = fmt.Errorf("trailing DER data: %d bytes", len(rest))
+			}
+			if parseErr == nil {
+				parseErr = errors.New("empty signature algorithm OID")
+			}
+			log.Printf("cert signature algorithm parse failed: %v", parseErr)
+		}
+		return ""
+	}
+	return cert.SignatureAlgorithm.Algorithm.String()
 }
 
 func logCert(rl reqLog, prefix string, c *pki.CertInfo) {
@@ -997,7 +1024,9 @@ func (h *handler) untrust(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) toggleTrust(w http.ResponseWriter, r *http.Request, trusted bool) {
-	var req struct{ Serial string `json:"serial"` }
+	var req struct {
+		Serial string `json:"serial"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Serial == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return

@@ -22,7 +22,9 @@ ENV LD_LIBRARY_PATH=/opt/openssl/lib
 
 WORKDIR /app
 COPY . .
-RUN go mod tidy && go build -o /certview ./cmd/certview
+RUN go mod tidy \
+    && go test ./cmd/certview \
+    && go build -o /certview ./cmd/certview
 
 # Stage 3: Runtime with shared OpenSSL + GOST engine
 FROM debian:bookworm-slim

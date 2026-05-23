@@ -13,6 +13,44 @@ C FFI-библиотека для работы с PKI: парсинг серти
 - **gost-engine/provider** — статически встроен через `OSSL_PROVIDER_add_builtin`
 - Единственная внешняя зависимость: **libc**
 
+## Сборка и проверка
+
+Сборка и проверка Go-сервисов, использующих MiniPKI через CGO, выполняется только в Docker. Локальный `go test ./cmd/certview` без специально настроенных `CGO_CFLAGS`/`CGO_LDFLAGS` не является поддерживаемым сценарием: пакет `internal/pki` требует `minipki.h`, `libminipki.a` и OpenSSL/GOST-зависимости из Docker build stage.
+
+Для проверки `certview` использовать Docker-сборку:
+
+```bash
+docker build \
+  -f Dockerfile.certview \
+  --build-context gost-openssl=docker-image://pidmitrius/gost-openssl:latest \
+  -t pidmitrius/certview:check \
+  .
+```
+
+Для проверки `certget` использовать Docker-сборку:
+
+```bash
+docker build \
+  -f Dockerfile.certget \
+  --build-context gost-openssl=docker-image://pidmitrius/gost-openssl:latest \
+  -t pidmitrius/certget:check \
+  .
+```
+
+Для локальной разработки `certview` + `certget` использовать:
+
+```bash
+scripts/local-certview.sh up
+```
+
+Скрипт собирает локальные `pidmitrius/certview:latest` и `pidmitrius/certget:latest`, запускает Go tests внутри Docker build stages, поднимает Docker Compose stack на `http://127.0.0.1:18080`, выполняет e2e smoke через `/api/site` и сохраняет существующий `/data` volume, если до этого уже был локальный контейнер `certview`.
+
+E2E target по умолчанию: `https://www.gosuslugi.ru`. Его можно заменить:
+
+```bash
+CERTVIEW_E2E_URL=https://example.com scripts/local-certview.sh up
+```
+
 ## Сущности
 
 | Тип | Описание |

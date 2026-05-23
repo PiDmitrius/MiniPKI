@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT="${COMPOSE_PROJECT_NAME:-minipki-local}"
+HTTP_PORT="${CERTVIEW_HTTP_PORT:-18080}"
+ADMIN_PORT="${CERTVIEW_ADMIN_PORT:-18081}"
+HTTP_BIND="${CERTVIEW_HTTP_BIND:-0.0.0.0}"
+ADMIN_BIND="${CERTVIEW_ADMIN_BIND:-127.0.0.1}"
+E2E_URL="${CERTVIEW_E2E_URL:-https://www.gosuslugi.ru}"
+E2E_TIMEOUT="${CERTVIEW_E2E_TIMEOUT:-45}"
+
+existing_data_volume() {
+  local name volume
+  for name in certview "${PROJECT}-certview-1"; do
+    volume="$(
+      docker inspect "$name" \
+        --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' \
+        2>/dev/null || true
+    )"
+    if [[ -n "$volume" ]]; then
+      printf '%s\n' "$volume"
+      return 0
+    fi
+  done
+}
+
+DATA_VOLUME="${CERTVIEW_DATA_VOLUME:-$(existing_data_volume)}"
+DATA_VOLUME="${DATA_VOLUME:-certview-data}"
+
+export CERTVIEW_HTTP_PORT="$HTTP_PORT"
+export CERTVIEW_ADMIN_PORT="$ADMIN_PORT"
+export CERTVIEW_HTTP_BIND="$HTTP_BIND"
+export CERTVIEW_ADMIN_BIND="$ADMIN_BIND"
+export CERTVIEW_DATA_VOLUME="$DATA_VOLUME"
+
+compose() {
+  docker compose \
+    -p "$PROJECT" \
+    -f "$ROOT/docker-compose.yml" \
+    -f "$ROOT/docker-compose.local.yml" \
+    "$@"
+}
+
+build_certget() {
+  docker build \
+    -f "$ROOT/Dockerfile.certget" \
+    --build-context gost-openssl=docker-image://pidmitrius/gost-openssl:latest \
+    -t pidmitrius/certget:latest \
+    "$ROOT"
+}
+
+build_certview() {
+  docker build \
+    -f "$ROOT/Dockerfile.certview" \
+    --build-context gost-openssl=docker-image://pidmitrius/gost-openssl:latest \
+    -t pidmitrius/certview:latest \
+    "$ROOT"
+}
+
+wait_http() {
+  local url="http://127.0.0.1:${HTTP_PORT}/api/config"
+  for _ in $(seq 1 30); do
+    if curl -fsS "$url" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "certview did not become ready at $url" >&2
+  return 1
+}
+
+e2e_smoke() {
+  local api="http://127.0.0.1:${HTTP_PORT}/api/site"
+  local body
+  body="$(
+    curl -fsS \
+      -m "$E2E_TIMEOUT" \
+      -H 'Content-Type: application/json' \
+      -d "{\"url\":\"${E2E_URL}\"}" \
+      "$api"
+  )"
+  if [[ "$body" != *'"ok":true'* ]]; then
+    echo "e2e smoke failed for ${E2E_URL}" >&2
+    printf '%s\n' "$body" | head -c 2000 >&2
+    echo >&2
+    return 1
+  fi
+}
+
+up() {
+  build_certget
+  build_certview
+
+  # Older local runs used hand-made containers named certview/certget on :18080.
+  # Remove them so Compose can own the local development stack.
+  docker rm -f certview certget >/dev/null 2>&1 || true
+  docker volume inspect "$DATA_VOLUME" >/dev/null 2>&1 || docker volume create "$DATA_VOLUME" >/dev/null
+
+  compose up -d --force-recreate
+  wait_http
+  e2e_smoke
+  echo "certview: http://127.0.0.1:${HTTP_PORT}"
+  echo "site example: http://127.0.0.1:${HTTP_PORT}/www.gosuslugi.ru"
+}
+
+down() {
+  compose down
+}
+
+case "${1:-up}" in
+  up)
+    up
+    ;;
+  build)
+    build_certget
+    build_certview
+    ;;
+  restart)
+    compose up -d --force-recreate
+    wait_http
+    e2e_smoke
+    ;;
+  test)
+    build_certget
+    build_certview
+    wait_http
+    e2e_smoke
+    ;;
+  down)
+    down
+    ;;
+  logs)
+    compose logs -f "${@:2}"
+    ;;
+  status)
+    compose ps
+    ;;
+  *)
+    echo "usage: ${0##*/} [up|build|restart|test|down|logs|status]" >&2
+    exit 2
+    ;;
+esac

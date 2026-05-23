@@ -6,7 +6,8 @@ RUN go mod download
 COPY internal/ ./internal/
 COPY cmd/certget/ ./cmd/certget/
 ENV CGO_ENABLED=0
-RUN go build -o /certget ./cmd/certget
+RUN go test ./cmd/certget ./internal/ssrfguard \
+    && go build -o /certget ./cmd/certget
 
 # Stage 2: Runtime with full OpenSSL + GOST engine/provider
 FROM debian:bookworm-slim

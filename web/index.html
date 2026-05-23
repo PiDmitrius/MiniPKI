@@ -812,6 +812,7 @@ function render(data) {
   results.classList.add('active');
   window.__isAdmin = data.is_admin || false;
   window.__lastData = data;
+  const chain = data.chain || [];
 
   // Verification
   const vr = data.verify || {};
@@ -821,6 +822,10 @@ function render(data) {
   else if (vr.status === 'no_crl' || vr.status === 'no_chain') cls = 'warn';
   let label = vr.status === 'ok' ? 'Valid' : (vr.message || vr.status);
   let html = `<span class="verify-badge ${cls}">${esc(label)}</span>`;
+  const cryptoBadge = chainCryptoBadge(chain);
+  if (cryptoBadge) {
+    html += ` <span class="verify-badge ${cryptoBadge.cls}" title="${esc(cryptoBadge.title)}">${esc(cryptoBadge.label)}</span>`;
+  }
   if (vr.trusted) {
     html += ` <span class="verify-badge ok" title="Chain reaches a trusted root: ${esc(vr.trust_via||'')}">Trusted</span>`;
   } else if (vr.status === 'ok' || vr.status === 'warn') {
@@ -838,7 +843,6 @@ function render(data) {
   // Chain
   const chainEl = document.getElementById('chain-tree');
   chainEl.innerHTML = '';
-  const chain = data.chain || [];
   chain.forEach((cert, i) => {
     const node = document.createElement('div');
     node.className = 'chain-node' + (i === 0 ? ' selected' : '');
@@ -982,6 +986,11 @@ function selectCert(e, chain, idx, mode, crlIdx) {
     <tr><td>Algorithm</td><td>${algoFull(cert.key_algorithm)}</td></tr>
     ${cert.key_bits ? `<tr><td>Bits</td><td>${cert.key_bits}</td></tr>` : ''}
     ${cert.key_curve ? `<tr><td>Curve</td><td>${esc(cert.key_curve)}</td></tr>` : ''}
+    ` : ''}
+
+    ${cert.signature_algorithm ? `
+    <tr><td colspan="2" class="detail-label">Certificate Signature</td></tr>
+    <tr><td>Algorithm</td><td>${algoFull(cert.signature_algorithm)}</td></tr>
     ` : ''}
 
     ${(cert.key_usage && cert.key_usage.length) ? `
@@ -1275,8 +1284,12 @@ const ALGO_OIDS = {
   // GOST
   '1.2.643.7.1.1.1.1':      { full: 'id-tc26-gost3410-2012-256',      short: 'GOST' },
   '1.2.643.7.1.1.1.2':      { full: 'id-tc26-gost3410-2012-512',      short: 'GOST' },
+  '1.2.643.7.1.1.3.2':      { full: 'id-tc26-signwithdigest-gost3410-2012-256', short: 'GOST' },
+  '1.2.643.7.1.1.3.3':      { full: 'id-tc26-signwithdigest-gost3410-2012-512', short: 'GOST' },
   '1.2.643.2.2.19':         { full: 'GOST R 34.10-2001',              short: 'GOST' },
   '1.2.643.2.2.20':         { full: 'GOST R 34.10-94',                short: 'GOST' },
+  '1.2.643.2.2.3':          { full: 'GOST R 34.11-94 with GOST R 34.10-2001', short: 'GOST' },
+  '1.2.643.2.2.4':          { full: 'GOST R 34.11-94 with GOST R 34.10-94', short: 'GOST' },
 };
 
 function algoLookup(oid) {
@@ -1287,6 +1300,61 @@ function algoTag(cert) {
   if (!cert.key_algorithm) return '';
   const info = algoLookup(cert.key_algorithm);
   return `<span class="tag algo" title="${esc(cert.key_algorithm)}">${esc(info.short)}</span>`;
+}
+
+function isGostOID(oid) {
+  if (!oid) return false;
+  const info = ALGO_OIDS[oid];
+  if (info && info.short === 'GOST') return true;
+  return oid.startsWith('1.2.643.7.1.1.1.') ||
+    oid.startsWith('1.2.643.7.1.1.3.');
+}
+
+function certCryptoState(cert) {
+  if (!cert.key_algorithm || !cert.signature_algorithm) return 'unknown';
+  const keyGost = isGostOID(cert.key_algorithm);
+  const sigGost = isGostOID(cert.signature_algorithm);
+  if (keyGost && sigGost) return 'gost';
+  if (!keyGost && !sigGost) return 'global';
+  return 'mixed';
+}
+
+function chainCryptoBadge(chain) {
+  if (!chain || chain.length === 0) return null;
+  const states = chain.map(certCryptoState);
+  if (states.includes('mixed')) {
+    return {
+      cls: 'warn',
+      label: 'GOST mixed',
+      title: 'At least one certificate mixes GOST with non-GOST key/signature algorithms'
+    };
+  }
+  if (states.includes('unknown')) {
+    return {
+      cls: 'warn',
+      label: 'Unknown',
+      title: 'At least one certificate is missing key or signature algorithm data'
+    };
+  }
+  if (states.every(s => s === 'gost')) {
+    return {
+      cls: 'ok',
+      label: 'GOST',
+      title: 'Every certificate in the chain uses GOST key and GOST signature algorithms'
+    };
+  }
+  if (states.includes('gost')) {
+    return {
+      cls: 'warn',
+      label: 'GOST mixed',
+      title: 'The chain contains both GOST-only and non-GOST certificates'
+    };
+  }
+  return {
+    cls: 'ok',
+    label: 'Global',
+    title: 'No GOST key or signature algorithms were found in the chain'
+  };
 }
 
 function algoFull(oid) {

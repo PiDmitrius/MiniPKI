@@ -1,4 +1,4 @@
-node_modules/
-test-results/
-playwright-report/
 .git/
+build/out/
+out/
+REVIEW_*.md

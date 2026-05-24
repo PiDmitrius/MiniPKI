@@ -10,12 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/PiDmitrius/MiniPKI/internal/dnshost"
 	"github.com/PiDmitrius/MiniPKI/internal/ssrfguard"
-	"golang.org/x/net/idna"
 )
 
 type siteRequest struct {
@@ -272,7 +273,7 @@ func normalizeSiteURL(input string) (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("parse url: %w", err)
 	}
-	host, err := normalizeDNSHost(u.Hostname())
+	host, err := dnshost.Normalize(u.Hostname())
 	if err != nil {
 		return "", 0, err
 	}
@@ -297,7 +298,11 @@ func splitHostPort(hp string) (string, int, error) {
 		if end < 0 {
 			return "", 0, errors.New("malformed IPv6 literal")
 		}
-		host := strings.ToLower(hp[1:end])
+		addr, err := netip.ParseAddr(hp[1:end])
+		if err != nil || !addr.Is6() {
+			return "", 0, errors.New("malformed IPv6 literal")
+		}
+		host := addr.String()
 		port := 443
 		if end+1 < len(hp) {
 			if hp[end+1] != ':' {
@@ -320,24 +325,9 @@ func splitHostPort(hp string) (string, int, error) {
 		}
 		port = v
 	}
-	host, err := normalizeDNSHost(host)
+	host, err := dnshost.Normalize(host)
 	if err != nil {
 		return "", 0, err
 	}
 	return host, port, nil
-}
-
-func normalizeDNSHost(host string) (string, error) {
-	host = strings.TrimSpace(strings.ToLower(host))
-	if host == "" {
-		return "", errors.New("empty host")
-	}
-	if net.ParseIP(host) != nil {
-		return host, nil
-	}
-	ascii, err := idna.Lookup.ToASCII(host)
-	if err != nil {
-		return "", fmt.Errorf("idna host %q: %w", host, err)
-	}
-	return strings.ToLower(ascii), nil
 }

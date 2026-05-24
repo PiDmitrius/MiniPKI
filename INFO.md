@@ -51,6 +51,12 @@ E2E target по умолчанию: `https://www.gosuslugi.ru`. Его можн�
 CERTVIEW_E2E_URL=https://example.com scripts/local-certview.sh up
 ```
 
+Браузерный e2e можно пропустить для быстрого/offline restart:
+
+```bash
+SKIP_BROWSER_E2E=1 scripts/local-certview.sh restart
+```
+
 ## Сущности
 
 | Тип | Описание |

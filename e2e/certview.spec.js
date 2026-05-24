@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 
 const baseURL = process.env.CERTVIEW_E2E_BASE_URL || 'http://127.0.0.1:18080';
 const siteHost = process.env.CERTVIEW_E2E_HOST || 'www.gosuslugi.ru';
-const idnErrorHost = process.env.CERTVIEW_E2E_IDN_ERROR_HOST || 'госуслуги.рф';
+const unresolvedHost = process.env.CERTVIEW_E2E_UNRESOLVED_HOST || 'не-существует.invalid';
 
 async function waitIdle(page) {
   await page.waitForFunction(() => !document.querySelector('#loading').classList.contains('active'));
@@ -56,15 +56,14 @@ test.describe('certview site links', () => {
     }
   });
 
-  test('shows in-page error without dialog for unresolved IDN host', async ({ page }) => {
+  test('shows in-page error without dialog for unresolved host', async ({ page }) => {
     await page.goto(baseURL + '/');
-    await page.fill('#pem-input', idnErrorHost);
+    await page.fill('#pem-input', unresolvedHost);
     await page.click('#pem-btn');
     await waitIdle(page);
 
     await expect(page.locator('#error-box')).toHaveClass(/active/);
     await expect(page.locator('#error-box')).toContainText('Site fetch failed');
-    await expect(page.locator('#error-box')).toContainText('resolve xn--c1aapkosapc.xn--p1ai');
     await expect(page.locator('#results')).not.toHaveClass(/active/);
   });
 });

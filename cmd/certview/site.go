@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/PiDmitrius/MiniPKI/internal/ssrfguard"
+	"golang.org/x/net/idna"
 )
 
 type siteRequest struct {
@@ -271,9 +272,9 @@ func normalizeSiteURL(input string) (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("parse url: %w", err)
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "" {
-		return "", 0, errors.New("no host in url")
+	host, err := normalizeDNSHost(u.Hostname())
+	if err != nil {
+		return "", 0, err
 	}
 	port := 443
 	if p := u.Port(); p != "" {
@@ -319,10 +320,24 @@ func splitHostPort(hp string) (string, int, error) {
 		}
 		port = v
 	}
-	host = strings.ToLower(host)
-	if host == "" {
-		return "", 0, errors.New("empty host")
+	host, err := normalizeDNSHost(host)
+	if err != nil {
+		return "", 0, err
 	}
 	return host, port, nil
 }
 
+func normalizeDNSHost(host string) (string, error) {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return "", errors.New("empty host")
+	}
+	if net.ParseIP(host) != nil {
+		return host, nil
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", fmt.Errorf("idna host %q: %w", host, err)
+	}
+	return strings.ToLower(ascii), nil
+}

@@ -90,6 +90,17 @@ e2e_smoke() {
   fi
 }
 
+browser_e2e() {
+  if [[ ! -d "$ROOT/node_modules/@playwright/test" ]]; then
+    (cd "$ROOT" && npm install)
+  fi
+  (cd "$ROOT" && npx playwright install chromium)
+  CERTVIEW_E2E_BASE_URL="http://127.0.0.1:${HTTP_PORT}" \
+    CERTVIEW_E2E_HOST="${CERTVIEW_E2E_HOST:-www.gosuslugi.ru}" \
+    CERTVIEW_E2E_IDN_ERROR_HOST="${CERTVIEW_E2E_IDN_ERROR_HOST:-госуслуги.рф}" \
+    npm --prefix "$ROOT" run e2e
+}
+
 ensure_data_volume_owner() {
   docker volume inspect "$DATA_VOLUME" >/dev/null 2>&1 || docker volume create "$DATA_VOLUME" >/dev/null
   docker run --rm \
@@ -110,6 +121,7 @@ up() {
   compose up -d --force-recreate
   wait_http
   e2e_smoke
+  browser_e2e
   echo "certview: http://127.0.0.1:${HTTP_PORT}"
   echo "site example: http://127.0.0.1:${HTTP_PORT}/www.gosuslugi.ru"
 }
@@ -131,12 +143,14 @@ case "${1:-up}" in
     compose up -d --force-recreate
     wait_http
     e2e_smoke
+    browser_e2e
     ;;
   test)
     build_certget
     build_certview
     wait_http
     e2e_smoke
+    browser_e2e
     ;;
   down)
     down

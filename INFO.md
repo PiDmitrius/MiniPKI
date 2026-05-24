@@ -43,7 +43,7 @@ docker build \
 scripts/local-certview.sh up
 ```
 
-Скрипт собирает локальные `pidmitrius/certview:latest` и `pidmitrius/certget:latest`, запускает Go tests внутри Docker build stages, поднимает Docker Compose stack на `http://127.0.0.1:18080`, выполняет e2e smoke через `/api/site` и сохраняет существующий `/data` volume, если до этого уже был локальный контейнер `certview`.
+Скрипт собирает локальные `pidmitrius/certview:latest` и `pidmitrius/certget:latest`, запускает Go tests внутри Docker build stages, поднимает Docker Compose stack на `http://127.0.0.1:18080`, выполняет e2e smoke через `/api/site` и сохраняет существующий `/data` volume, если до этого уже был локальный контейнер `certview`. Перед запуском скрипт выставляет владельца `/data` volume под runtime UID/GID `65532:65532`, потому что runtime-контейнеры работают не от root.
 
 E2E target по умолчанию: `https://www.gosuslugi.ru`. Его можно заменить:
 

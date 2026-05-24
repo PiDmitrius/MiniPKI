@@ -750,8 +750,9 @@ function updateHashFromData(data) {
   }
 }
 
-function shareLink(btn, tp) {
-  const url = window.location.origin + window.location.pathname + '#' + tp;
+function shareLink(btn, tp, keepSitePath) {
+  const path = keepSitePath ? window.location.pathname : '/';
+  const url = window.location.origin + path + '#' + tp;
   copyToClipboard(url, btn, 'Link');
 }
 
@@ -869,7 +870,7 @@ function render(data) {
       <div class="cert-actions">
         <button onclick="event.stopPropagation(); copyB64(this, '${jsesc(cert.der_b64)}')">Copy B64</button>
         <button onclick="event.stopPropagation(); saveDER('${jsesc(cert.der_b64)}', '${jsesc(cert.serial)}')">Save .cer</button>
-        <button onclick="event.stopPropagation(); shareLink(this, '${jsesc(cert.thumbprint_sha1)}')">Link</button>
+        <button onclick="event.stopPropagation(); shareLink(this, '${jsesc(cert.thumbprint_sha1)}', ${i === 0})">Link</button>
         ${adminBtn}
       </div>`;
     node.addEventListener('click', (e) => { e.stopPropagation(); selectCert(e, chain, i, 'cert'); });

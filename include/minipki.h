@@ -8,7 +8,7 @@
 /* Version */
 #define MP_VERSION_MAJOR 1
 #define MP_VERSION_MINOR 0
-#define MP_VERSION_PATCH 0
+#define MP_VERSION_PATCH 1
 
 #define MP_VERSION \
     ( ( MP_VERSION_MAJOR << 16 ) | ( MP_VERSION_MINOR << 8 ) | MP_VERSION_PATCH )

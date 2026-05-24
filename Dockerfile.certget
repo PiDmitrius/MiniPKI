@@ -6,7 +6,7 @@ RUN go mod download
 COPY internal/ ./internal/
 COPY cmd/certget/ ./cmd/certget/
 ENV CGO_ENABLED=0
-RUN go test ./cmd/certget ./internal/ssrfguard \
+RUN go test ./cmd/certget ./internal/ssrfguard ./internal/dnshost \
     && go build -o /certget ./cmd/certget
 
 # Stage 2: Runtime with full OpenSSL + GOST engine/provider

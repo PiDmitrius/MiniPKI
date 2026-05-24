@@ -9,6 +9,8 @@ HTTP_BIND="${CERTVIEW_HTTP_BIND:-0.0.0.0}"
 ADMIN_BIND="${CERTVIEW_ADMIN_BIND:-127.0.0.1}"
 E2E_URL="${CERTVIEW_E2E_URL:-https://www.gosuslugi.ru}"
 E2E_TIMEOUT="${CERTVIEW_E2E_TIMEOUT:-45}"
+RUNTIME_UID="${CERTVIEW_RUNTIME_UID:-65532}"
+RUNTIME_GID="${CERTVIEW_RUNTIME_GID:-65532}"
 
 existing_data_volume() {
   local name volume
@@ -88,6 +90,14 @@ e2e_smoke() {
   fi
 }
 
+ensure_data_volume_owner() {
+  docker volume inspect "$DATA_VOLUME" >/dev/null 2>&1 || docker volume create "$DATA_VOLUME" >/dev/null
+  docker run --rm \
+    -v "${DATA_VOLUME}:/data" \
+    debian:bookworm-slim \
+    sh -c "chown -R ${RUNTIME_UID}:${RUNTIME_GID} /data"
+}
+
 up() {
   build_certget
   build_certview
@@ -95,7 +105,7 @@ up() {
   # Older local runs used hand-made containers named certview/certget on :18080.
   # Remove them so Compose can own the local development stack.
   docker rm -f certview certget >/dev/null 2>&1 || true
-  docker volume inspect "$DATA_VOLUME" >/dev/null 2>&1 || docker volume create "$DATA_VOLUME" >/dev/null
+  ensure_data_volume_owner
 
   compose up -d --force-recreate
   wait_http
@@ -117,6 +127,7 @@ case "${1:-up}" in
     build_certview
     ;;
   restart)
+    ensure_data_volume_owner
     compose up -d --force-recreate
     wait_http
     e2e_smoke

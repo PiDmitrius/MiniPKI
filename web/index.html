@@ -702,23 +702,12 @@ function renderActiveSiteTab() {
     return;
   }
   render(r.analysis);
-  // Reflect selected leaf's thumbprint in the URL hash so the link points
-  // at this specific certificate (matters for dual-stack: Global vs GOST).
-  const leaf = r.analysis.chain && r.analysis.chain[0];
-  if (leaf && leaf.thumbprint_sha1) {
-    const want = '#' + leaf.thumbprint_sha1;
-    if (window.location.hash !== want) {
-      window.__suppressHash = true;
-      window.history.replaceState(null, '', window.location.pathname + want);
-      setTimeout(() => { window.__suppressHash = false; }, 100);
-    }
-  }
 }
 
 function updateSitePath(host, port) {
   const newPath = '/' + canonicalSiteString(host, port);
-  if (window.location.pathname !== newPath) {
-    window.history.replaceState(null, '', newPath + window.location.hash);
+  if (window.location.pathname !== newPath || window.location.hash) {
+    window.history.replaceState(null, '', newPath);
   }
 }
 

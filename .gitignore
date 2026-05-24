@@ -12,3 +12,8 @@ build/out/
 # Local databases / review notes
 *.db
 REVIEW_*.md
+
+# Browser e2e dependencies
+node_modules/
+test-results/
+playwright-report/

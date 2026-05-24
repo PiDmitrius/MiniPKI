@@ -439,6 +439,21 @@ main {
 }
 .site-tab.failed { color: var(--red); opacity: 0.7; }
 
+#error-box {
+  display: none;
+  margin-top: 16px;
+  border: 1px solid #ff8182;
+  background: #ffebe9;
+  color: var(--red);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+#error-box.active { display: block; }
+#error-box .error-title { font-weight: 600; margin-bottom: 4px; }
+#error-box .error-message { color: var(--text); overflow-wrap: anywhere; }
+
 </style>
 </head>
 <body>
@@ -458,6 +473,10 @@ main {
   </div>
 
   <div id="loading">Analyzing certificate&hellip;</div>
+  <div id="error-box">
+    <div class="error-title"></div>
+    <div class="error-message"></div>
+  </div>
 
   <div id="results">
     <div class="section" id="verify-section">
@@ -490,10 +509,28 @@ const pemBtn = document.getElementById('pem-btn');
 const loading = document.getElementById('loading');
 const results = document.getElementById('results');
 const siteTabs = document.getElementById('site-tabs');
+const errorBox = document.getElementById('error-box');
 
 let siteEnabled = false;
 let siteData = null;
 let activeTabIdx = 0;
+
+function clearError() {
+  errorBox.classList.remove('active');
+  errorBox.querySelector('.error-title').textContent = '';
+  errorBox.querySelector('.error-message').textContent = '';
+}
+
+function showError(title, message) {
+  errorBox.querySelector('.error-title').textContent = title;
+  errorBox.querySelector('.error-message').textContent = message || '';
+  errorBox.classList.add('active');
+}
+
+function resetSiteState() {
+  siteData = null;
+  siteTabs.style.display = 'none';
+}
 
 // Heuristic: decide whether textarea content is a URL/host or PEM/binary.
 // PEM is multi-line and/or has '-----' markers; a URL/host is a short single
@@ -546,6 +583,7 @@ async function sendFile(file) {
 async function sendBytes(bytes) {
   loading.classList.add('active');
   results.classList.remove('active');
+  clearError();
   clearSiteUI();
 
   try {
@@ -557,7 +595,7 @@ async function sendBytes(bytes) {
     render(data);
     updateHashFromData(data);
   } catch (e) {
-    alert('Request failed: ' + e.message);
+    showError('Request failed', e.message);
   } finally {
     loading.classList.remove('active');
   }
@@ -566,6 +604,7 @@ async function sendBytes(bytes) {
 async function loadByThumbprint(tp) {
   loading.classList.add('active');
   results.classList.remove('active');
+  clearError();
   clearSiteUI();
   try {
     const resp = await fetch('/api/cert/' + encodeURIComponent(tp));
@@ -573,7 +612,7 @@ async function loadByThumbprint(tp) {
     const data = await resp.json();
     render(data);
   } catch (e) {
-    alert('Load failed: ' + e.message);
+    showError('Load failed', e.message);
   } finally {
     loading.classList.remove('active');
   }
@@ -582,6 +621,9 @@ async function loadByThumbprint(tp) {
 async function fetchSite(url) {
   loading.classList.add('active');
   results.classList.remove('active');
+  clearError();
+  resetSiteState();
+  activeTabIdx = 0;
   try {
     const resp = await fetch('/api/site', {
       method: 'POST',
@@ -590,7 +632,7 @@ async function fetchSite(url) {
     });
     if (!resp.ok) {
       const t = await resp.text();
-      alert('Site fetch failed: ' + t.trim());
+      showError('Site fetch failed', t.trim());
       return;
     }
     const data = await resp.json();
@@ -599,7 +641,7 @@ async function fetchSite(url) {
     renderSite(data);
     updateSitePath(data.host, data.port);
   } catch (e) {
-    alert('Request failed: ' + e.message);
+    showError('Request failed', e.message);
   } finally {
     loading.classList.remove('active');
   }
@@ -615,12 +657,15 @@ function canonicalSiteString(host, port) {
 async function loadSiteByPath(hostport, targetThumb) {
   loading.classList.add('active');
   results.classList.remove('active');
+  clearError();
+  resetSiteState();
+  activeTabIdx = 0;
   pemInput.value = hostport;
   try {
     const resp = await fetch('/api/site/' + encodeURIComponent(hostport));
     if (!resp.ok) {
       const t = await resp.text();
-      alert('Site load failed: ' + t.trim());
+      showError('Site load failed', t.trim());
       return;
     }
     const data = await resp.json();
@@ -633,7 +678,7 @@ async function loadSiteByPath(hostport, targetThumb) {
     }
     renderSite(data);
   } catch (e) {
-    alert('Request failed: ' + e.message);
+    showError('Request failed', e.message);
   } finally {
     loading.classList.remove('active');
   }
@@ -712,8 +757,7 @@ function updateSitePath(host, port) {
 }
 
 function clearSiteUI() {
-  siteData = null;
-  siteTabs.style.display = 'none';
+  resetSiteState();
   if (window.location.pathname !== '/') {
     window.history.replaceState(null, '', '/');
   }
@@ -800,6 +844,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 function render(data) {
   results.classList.add('active');
+  clearError();
   window.__isAdmin = data.is_admin || false;
   window.__lastData = data;
   const chain = data.chain || [];
@@ -1194,7 +1239,7 @@ async function toggleTrust(btn, serial, currentlyTrusted) {
 
     render(window.__lastData);
   } catch (e) {
-    alert('Failed: ' + e.message);
+    showError('Failed', e.message);
     btn.disabled = false;
     btn.textContent = orig;
   }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PiDmitrius/MiniPKI/internal/ssrfguard"
+	"golang.org/x/net/idna"
 )
 
 var reqCounter atomic.Uint64
@@ -176,9 +177,9 @@ func normalizeURL(input string) (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("parse url: %w", err)
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "" {
-		return "", 0, fmt.Errorf("no host in url")
+	host, err := normalizeDNSHost(u.Hostname())
+	if err != nil {
+		return "", 0, err
 	}
 	port := 443
 	if p := u.Port(); p != "" {
@@ -189,6 +190,21 @@ func normalizeURL(input string) (string, int, error) {
 		port = v
 	}
 	return host, port, nil
+}
+
+func normalizeDNSHost(host string) (string, error) {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return "", fmt.Errorf("no host in url")
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return host, nil
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", fmt.Errorf("idna host %q: %w", host, err)
+	}
+	return strings.ToLower(ascii), nil
 }
 
 func derToPEM(ders [][]byte) []string {

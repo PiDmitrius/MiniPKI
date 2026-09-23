@@ -218,6 +218,8 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
                                         MP_OCSP_RESP * resp );
 MP_API int32_t mp_ocsp_response_close( MP_OCSP_RESP resp );
 
+/* Status and times come from the response's own fields whether or not its
+ * signature verified: trust them only when mp_ocsp_verified reports 1. */
 MP_API int32_t mp_ocsp_status( MP_OCSP_RESP resp, int32_t * status );
 MP_API int32_t mp_ocsp_verified( MP_OCSP_RESP resp, int32_t * verified );
 MP_API int32_t mp_ocsp_this_update( MP_OCSP_RESP resp, int64_t * time );

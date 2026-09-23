@@ -219,17 +219,6 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
         }
     }
 
-    /* Cache DER for later access */
-    {
-        uint8_t * buf = NULL;
-        int len = i2d_OCSP_RESPONSE( resp, &buf );
-        if( len > 0 )
-        {
-            r->der = buf;
-            r->derlen = (size_t)len;
-        }
-    }
-
     *out = r;
     return MP_OK;
 }
@@ -300,6 +289,15 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
                              const uint8_t ** der, size_t * derlen )
 {
     if( !resp || !der || !derlen ) return MP_ERR_INVALID_ARG;
+    if( !resp->der )
+    {
+        uint8_t * buf = NULL;
+        int len = i2d_OCSP_RESPONSE( resp->resp, &buf );
+        if( len <= 0 )
+            return MP_ERR_OPENSSL;
+        resp->der = buf;
+        resp->derlen = (size_t)len;
+    }
     *der = resp->der;
     *derlen = resp->derlen;
     return MP_OK;

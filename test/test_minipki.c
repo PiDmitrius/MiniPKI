@@ -531,6 +531,18 @@ static int test_hardening( void )
     CHECK( mp_ocsp_verified( resp, &verified ), "mp_ocsp_verified" );
     EXPECT( status, MP_OCSP_GOOD, "OCSP status with SHA-256 CertID" );
     EXPECT( verified, 1, "OCSP response verified" );
+    const uint8_t * rder;
+    size_t rderlen;
+    CHECK( mp_ocsp_der( resp, &rder, &rderlen ), "mp_ocsp_der" );
+    d = fx( "ocsp256.der", &n );
+    if( rderlen != n || memcmp( rder, d, n ) != 0 )
+    {
+        fprintf( stderr, "FAIL: OCSP DER differs from the input\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    free( d );
+    g_tests_passed++;
     CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
 
     CHECK( mp_cert_close( leaf ), "mp_cert_close" );

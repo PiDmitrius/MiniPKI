@@ -1,5 +1,6 @@
 /* mp_store.c - Trust store and verification */
 #include "mp_internal.h"
+#include <limits.h>
 
 MP_API int32_t mp_store_new( MP_CTX ctx, MP_STORE * store )
 {
@@ -14,8 +15,11 @@ MP_API int32_t mp_store_new( MP_CTX ctx, MP_STORE * store )
 
     s->ctx = ctx;
     s->store = X509_STORE_new();
-    if( !s->store )
+    s->untrusted = sk_X509_new_null();
+    if( !s->store || !s->untrusted )
     {
+        X509_STORE_free( s->store );
+        sk_X509_free( s->untrusted );
         free( s );
         return MP_ERR_OPENSSL;
     }
@@ -30,6 +34,7 @@ MP_API int32_t mp_store_close( MP_STORE store )
         return MP_ERR_INVALID_ARG;
 
     X509_STORE_free( store->store );
+    sk_X509_pop_free( store->untrusted, X509_free );
     free( store );
     return MP_OK;
 }
@@ -37,13 +42,12 @@ MP_API int32_t mp_store_close( MP_STORE store )
 MP_API int32_t mp_store_add_root( MP_STORE store,
                                   const uint8_t * cert, size_t certlen )
 {
-    const uint8_t * p = cert;
     X509 * x;
 
-    if( !store || !cert || !certlen )
+    if( !store || !cert || !certlen || certlen > INT_MAX )
         return MP_ERR_INVALID_ARG;
 
-    x = d2i_X509( NULL, &p, (long)certlen );
+    x = mp_d2i_x509( cert, certlen );
     if( !x )
         return MP_ERR_PARSE;
 
@@ -60,21 +64,32 @@ MP_API int32_t mp_store_add_root( MP_STORE store,
 MP_API int32_t mp_store_add_intermediate( MP_STORE store,
                                           const uint8_t * cert, size_t certlen )
 {
-    /* Same as add_root — OpenSSL X509_STORE treats them uniformly;
-       chain building resolves the role */
-    return mp_store_add_root( store, cert, certlen );
+    X509 * x;
+
+    if( !store || !cert || !certlen || certlen > INT_MAX )
+        return MP_ERR_INVALID_ARG;
+
+    x = mp_d2i_x509( cert, certlen );
+    if( !x )
+        return MP_ERR_PARSE;
+
+    if( !sk_X509_push( store->untrusted, x ) )
+    {
+        X509_free( x );
+        return MP_ERR_OPENSSL;
+    }
+    return MP_OK;
 }
 
 MP_API int32_t mp_store_add_crl( MP_STORE store,
                                  const uint8_t * crl, size_t crllen )
 {
-    const uint8_t * p = crl;
     X509_CRL * c;
 
-    if( !store || !crl || !crllen )
+    if( !store || !crl || !crllen || crllen > INT_MAX )
         return MP_ERR_INVALID_ARG;
 
-    c = d2i_X509_CRL( NULL, &p, (long)crllen );
+    c = mp_d2i_crl( crl, crllen );
     if( !c )
         return MP_ERR_PARSE;
 
@@ -120,11 +135,15 @@ MP_API int32_t mp_verify( MP_STORE store, MP_CERT cert,
     if( !store || !cert || !chain )
         return MP_ERR_INVALID_ARG;
 
+    store->last_err_code = 0;
+    store->last_err_depth = 0;
+    store->last_err_msg[0] = '\0';
+
     vctx = X509_STORE_CTX_new();
     if( !vctx )
         return MP_ERR_OPENSSL;
 
-    if( !X509_STORE_CTX_init( vctx, store->store, cert->x509, NULL ) )
+    if( !X509_STORE_CTX_init( vctx, store->store, cert->x509, store->untrusted ) )
     {
         X509_STORE_CTX_free( vctx );
         return MP_ERR_OPENSSL;
@@ -254,35 +273,9 @@ MP_API int32_t mp_chain_close( MP_CHAIN chain )
     if( !chain )
         return MP_ERR_INVALID_ARG;
 
-    /* Free cached strings in cert wrappers (but not x509 — owned by stack) */
+    /* x509 of each wrapper is owned by the stack */
     for( size_t i = 0; i < chain->count; i++ )
-    {
-        OPENSSL_free( chain->certs[i].der );
-        OPENSSL_free( chain->certs[i].subject );
-        OPENSSL_free( chain->certs[i].issuer );
-        OPENSSL_free( chain->certs[i].serial );
-        free( chain->certs[i].ski );
-        free( chain->certs[i].aki );
-        free( chain->certs[i].key_algorithm );
-        free( chain->certs[i].key_curve );
-        OPENSSL_free( chain->certs[i].subject_name_der );
-        OPENSSL_free( chain->certs[i].issuer_name_der );
-        for( size_t j = 0; j < chain->certs[i].eku_count; j++ )
-            free( chain->certs[i].eku_oids[j] );
-        free( chain->certs[i].eku_oids );
-        for( size_t j = 0; j < chain->certs[i].san_count; j++ )
-            free( chain->certs[i].san_entries[j] );
-        free( chain->certs[i].san_entries );
-        for( size_t j = 0; j < chain->certs[i].aia_count; j++ )
-            free( chain->certs[i].aia_urls[j] );
-        free( chain->certs[i].aia_urls );
-        for( size_t j = 0; j < chain->certs[i].ocsp_count; j++ )
-            free( chain->certs[i].ocsp_urls[j] );
-        free( chain->certs[i].ocsp_urls );
-        for( size_t j = 0; j < chain->certs[i].cdp_count; j++ )
-            free( chain->certs[i].cdp_urls[j] );
-        free( chain->certs[i].cdp_urls );
-    }
+        mp_cert_free_fields( &chain->certs[i] );
 
     free( chain->certs );
     sk_X509_pop_free( chain->chain, X509_free );

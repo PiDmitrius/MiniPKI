@@ -1,29 +1,45 @@
 /* mp_crl.c - CRL parsing and accessors */
 #include "mp_internal.h"
+#include <limits.h>
+
+X509_CRL * mp_d2i_crl( const uint8_t * data, size_t datalen )
+{
+    const uint8_t * p = data;
+    X509_CRL * x = d2i_X509_CRL( NULL, &p, (long)datalen );
+    if( x && p != data + datalen )
+    {
+        X509_CRL_free( x );
+        return NULL;
+    }
+    return x;
+}
 
 MP_API int32_t mp_crl_parse( MP_CTX ctx,
                              const uint8_t * data, size_t datalen,
                              MP_CRL * crl )
 {
     struct MP_CRL_S * c;
-    const uint8_t * p = data;
     X509_CRL * x;
 
-    if( !ctx || !data || !datalen || !crl )
+    if( !ctx || !data || !datalen || datalen > INT_MAX || !crl )
         return MP_ERR_INVALID_ARG;
 
-    x = d2i_X509_CRL( NULL, &p, (long)datalen );
-    if( !x )
+    ERR_set_mark();
+    if( mp_is_binary( data, datalen ) )
+        x = mp_d2i_crl( data, datalen );
+    else
     {
-        /* Try PEM */
+        x = NULL;
         BIO * bio = BIO_new_mem_buf( data, (int)datalen );
-        if( !bio )
-            return MP_ERR_PARSE;
-        x = PEM_read_bio_X509_CRL( bio, NULL, NULL, NULL );
-        BIO_free( bio );
-        if( !x )
-            return MP_ERR_PARSE;
+        if( bio )
+        {
+            x = PEM_read_bio_X509_CRL( bio, NULL, NULL, NULL );
+            BIO_free( bio );
+        }
     }
+    ERR_pop_to_mark();
+    if( !x )
+        return MP_ERR_PARSE;
 
     c = calloc( 1, sizeof( *c ) );
     if( !c )
@@ -37,12 +53,34 @@ MP_API int32_t mp_crl_parse( MP_CTX ctx,
     return MP_OK;
 }
 
+MP_API int32_t mp_crl_der( MP_CRL crl,
+                           const uint8_t ** der, size_t * derlen )
+{
+    if( !crl || !der || !derlen )
+        return MP_ERR_INVALID_ARG;
+
+    if( !crl->der )
+    {
+        uint8_t * buf = NULL;
+        int len = i2d_X509_CRL( crl->crl, &buf );
+        if( len <= 0 )
+            return MP_ERR_OPENSSL;
+        crl->der = buf;
+        crl->derlen = (size_t)len;
+    }
+
+    *der = crl->der;
+    *derlen = crl->derlen;
+    return MP_OK;
+}
+
 MP_API int32_t mp_crl_close( MP_CRL crl )
 {
     if( !crl )
         return MP_ERR_INVALID_ARG;
 
     X509_CRL_free( crl->crl );
+    OPENSSL_free( crl->der );
     OPENSSL_free( crl->issuer );
     OPENSSL_free( crl->issuer_name_der );
     free( crl->aki );
@@ -115,7 +153,10 @@ MP_API int32_t mp_crl_next_update( MP_CRL crl, int64_t * time )
 
     const ASN1_TIME * next = X509_CRL_get0_nextUpdate( crl->crl );
     if( !next )
-        return MP_ERR_OPENSSL;
+    {
+        *time = 0;
+        return MP_OK;
+    }
 
     if( !ASN1_TIME_to_tm( next, &tm ) )
         return MP_ERR_OPENSSL;

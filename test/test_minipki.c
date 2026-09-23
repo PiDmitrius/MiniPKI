@@ -206,6 +206,14 @@ static int test_cert_parse( void )
     printf( "  OK: DER round-trip (%zu bytes)\n", derlen );
     g_tests_passed++;
 
+    uint8_t * padded = malloc( datalen + 1 );
+    memcpy( padded, data, datalen );
+    padded[datalen] = 0;
+    MP_CERT extra = NULL;
+    EXPECT( mp_cert_parse( ctx, padded, datalen + 1, &extra ), MP_ERR_PARSE,
+            "mp_cert_parse(trailing byte)" );
+    free( padded );
+
     CHECK( mp_cert_close( cert ), "mp_cert_close" );
     CHECK( mp_close( ctx ), "mp_close" );
     free( data );
@@ -345,6 +353,25 @@ static int test_crl_verify( void )
     CHECK( mp_cert_parse( ctx, ca_buf, ca_len, &ca ), "mp_cert_parse(CA)" );
     CHECK( mp_crl_parse( ctx, crl_buf, crl_len, &crl ), "mp_crl_parse" );
 
+    uint8_t * padded = malloc( crl_len + 1 );
+    memcpy( padded, crl_buf, crl_len );
+    padded[crl_len] = 0;
+    MP_CRL extra = NULL;
+    EXPECT( mp_crl_parse( ctx, padded, crl_len + 1, &extra ), MP_ERR_PARSE,
+            "mp_crl_parse(trailing byte)" );
+    free( padded );
+
+    const uint8_t * crl_der;
+    size_t crl_derlen;
+    CHECK( mp_crl_der( crl, &crl_der, &crl_derlen ), "mp_crl_der" );
+    if( crl_derlen != crl_len || memcmp( crl_der, crl_buf, crl_len ) != 0 )
+    {
+        fprintf( stderr, "FAIL: CRL DER differs from the input\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    g_tests_passed++;
+
     /* Good signature */
     EXPECT( mp_crl_verify( crl, ca ), MP_OK, "mp_crl_verify(valid)" );
 
@@ -395,6 +422,137 @@ static int test_crl_verify( void )
 }
 #endif /* !_WIN32 */
 
+#ifndef _WIN32
+#define FX_DIR "/tmp/test_minipki_hardening"
+
+static uint8_t * fx( const char * name, size_t * len )
+{
+    char path[ 256 ];
+    snprintf( path, sizeof( path ), "%s/%s", FX_DIR, name );
+    return read_file( path, len );
+}
+
+static int test_hardening( void )
+{
+    MP_CTX ctx = NULL;
+    MP_CERT cert = NULL, leaf = NULL, inter = NULL, eleaf = NULL;
+    MP_STORE store = NULL;
+    MP_CHAIN chain = NULL;
+    MP_BAG bag = NULL;
+    MP_OCSP_RESP resp = NULL;
+    uint8_t * d;
+    size_t n;
+
+    printf( "\n[7] Hardening\n" );
+
+    if( system( "sh ../test/gen_hardening.sh " FX_DIR " " REDIR_NULL ) != 0 )
+    {
+        fprintf( stderr, "FAIL: could not generate hardening fixtures\n" );
+        g_tests_failed++;
+        return 1;
+    }
+
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+
+    /* A long OID is returned in full */
+    d = fx( "longeku.der", &n );
+    CHECK( mp_cert_parse( ctx, d, n, &cert ), "mp_cert_parse(long EKU)" );
+    free( d );
+    const uint8_t * oid;
+    size_t oidlen;
+    CHECK( mp_cert_eku_oid( cert, 0, &oid, &oidlen ), "mp_cert_eku_oid" );
+    if( oidlen != 11 + 40 * 7 )
+    {
+        fprintf( stderr, "FAIL: long EKU OID length %zu\n", oidlen );
+        g_tests_failed++;
+        return 1;
+    }
+    g_tests_passed++;
+    CHECK( mp_cert_close( cert ), "mp_cert_close" );
+
+    /* Binary input is exact DER: DER followed by PEM, PKCS#7 with a trailer */
+    d = fx( "derpem.bin", &n );
+    EXPECT( mp_cert_parse( ctx, d, n, &cert ), MP_ERR_PARSE, "mp_cert_parse(DER+PEM)" );
+    free( d );
+    d = fx( "p7junk.bin", &n );
+    EXPECT( mp_cert_parse( ctx, d, n, &cert ), MP_ERR_PARSE, "mp_cert_parse(PKCS#7+trailer)" );
+    EXPECT( mp_bag_parse( ctx, d, n, &bag ), MP_ERR_PARSE, "mp_bag_parse(PKCS#7+trailer)" );
+    free( d );
+    d = fx( "p7.der", &n );
+    CHECK( mp_bag_parse( ctx, d, n, &bag ), "mp_bag_parse(PKCS#7)" );
+    CHECK( mp_bag_close( bag ), "mp_bag_close" );
+    free( d );
+
+    d = fx( "leaf.der", &n );
+    CHECK( mp_cert_parse( ctx, d, n, &leaf ), "mp_cert_parse(leaf)" );
+    free( d );
+    d = fx( "inter.der", &n );
+    CHECK( mp_cert_parse( ctx, d, n, &inter ), "mp_cert_parse(inter)" );
+    free( d );
+    d = fx( "eleaf.der", &n );
+    CHECK( mp_cert_parse( ctx, d, n, &eleaf ), "mp_cert_parse(eleaf)" );
+    free( d );
+
+    /* An intermediate is never a trust anchor */
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    d = fx( "root.der", &n );
+    CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root" );
+    free( d );
+    d = fx( "evil.der", &n );
+    CHECK( mp_store_add_intermediate( store, d, n ), "mp_store_add_intermediate(evil)" );
+    free( d );
+    if( mp_verify( store, eleaf, &chain ) == MP_OK )
+    {
+        fprintf( stderr, "FAIL: chain to an intermediate-only CA verified\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    g_tests_passed++;
+
+    /* A real intermediate builds the chain; a success clears the last error */
+    d = fx( "inter.der", &n );
+    CHECK( mp_store_add_intermediate( store, d, n ), "mp_store_add_intermediate" );
+    free( d );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(via intermediate)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    int32_t code = -1, depth;
+    const uint8_t * msg;
+    size_t msglen;
+    CHECK( mp_verify_last_error( store, &code, &depth, &msg, &msglen ), "mp_verify_last_error" );
+    EXPECT( code, 0, "last error cleared after success" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+
+    /* OCSP status is found with the response's own CertID hash (SHA-256) */
+    d = fx( "ocsp256.der", &n );
+    CHECK( mp_ocsp_response_parse( ctx, leaf, inter, d, n, &resp ), "mp_ocsp_response_parse" );
+    free( d );
+    int32_t status = -1, verified = 0;
+    CHECK( mp_ocsp_status( resp, &status ), "mp_ocsp_status" );
+    CHECK( mp_ocsp_verified( resp, &verified ), "mp_ocsp_verified" );
+    EXPECT( status, MP_OCSP_GOOD, "OCSP status with SHA-256 CertID" );
+    EXPECT( verified, 1, "OCSP response verified" );
+    const uint8_t * rder;
+    size_t rderlen;
+    CHECK( mp_ocsp_der( resp, &rder, &rderlen ), "mp_ocsp_der" );
+    d = fx( "ocsp256.der", &n );
+    if( rderlen != n || memcmp( rder, d, n ) != 0 )
+    {
+        fprintf( stderr, "FAIL: OCSP DER differs from the input\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    free( d );
+    g_tests_passed++;
+    CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
+
+    CHECK( mp_cert_close( leaf ), "mp_cert_close" );
+    CHECK( mp_cert_close( inter ), "mp_cert_close" );
+    CHECK( mp_cert_close( eleaf ), "mp_cert_close" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    return 0;
+}
+#endif
+
 static int test_error_handling( void )
 {
     printf( "\n[6] Error handling\n" );
@@ -421,11 +579,12 @@ int main( void )
     rc |= test_verify();
 #ifndef _WIN32
     rc |= test_crl_verify();
+    rc |= test_hardening();
 #endif
     rc |= test_error_handling();
 
     printf( "\n=== Results: %d passed, %d failed ===\n",
             g_tests_passed, g_tests_failed );
 
-    return g_tests_failed > 0 ? 1 : 0;
+    return rc || g_tests_failed > 0 ? 1 : 0;
 }

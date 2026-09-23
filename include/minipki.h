@@ -7,8 +7,8 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 1
-#define MP_VERSION_MINOR 0
-#define MP_VERSION_PATCH 2
+#define MP_VERSION_MINOR 1
+#define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
     ( ( MP_VERSION_MAJOR << 16 ) | ( MP_VERSION_MINOR << 8 ) | MP_VERSION_PATCH )
@@ -25,6 +25,12 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Handles are not thread-safe: a handle, and handles obtained from it,
+ * must not be used by several threads at once. Distinct handles may be used
+ * concurrently. Binary input (starting with a DER SEQUENCE) is parsed only
+ * as DER and must be consumed exactly; other input is parsed as text (PEM,
+ * or raw base64 for certificates). */
 
 /* Opaque handles */
 typedef struct MP_CTX_S   * MP_CTX;
@@ -57,6 +63,8 @@ MP_API uint32_t mp_version( void );
 
 /* -- Context ------------------------------------------------------- */
 
+/* If MINIPKI_GOST_ENGINE names the GOST engine, it is loaded on the first
+ * call; MP_ERR_OPENSSL if it cannot be loaded. */
 MP_API int32_t mp_open( int32_t type, MP_CTX * ctx );
 MP_API int32_t mp_close( MP_CTX ctx );
 
@@ -138,9 +146,14 @@ MP_API int32_t mp_crl_parse( MP_CTX ctx,
                              MP_CRL * crl );
 MP_API int32_t mp_crl_close( MP_CRL crl );
 
+/* DER encoding of the parsed CRL, whatever form it was parsed from. */
+MP_API int32_t mp_crl_der( MP_CRL crl,
+                           const uint8_t ** der, size_t * derlen );
+
 MP_API int32_t mp_crl_issuer( MP_CRL crl,
                               const uint8_t ** out, size_t * outlen );
 MP_API int32_t mp_crl_this_update( MP_CRL crl, int64_t * time );
+/* 0 if the CRL has no nextUpdate. */
 MP_API int32_t mp_crl_next_update( MP_CRL crl, int64_t * time );
 
 MP_API int32_t mp_crl_is_revoked( MP_CRL crl, MP_CERT cert,
@@ -169,6 +182,7 @@ MP_API int32_t mp_store_close( MP_STORE store );
 
 MP_API int32_t mp_store_add_root( MP_STORE store,
                                   const uint8_t * cert, size_t certlen );
+/* Roots are trust anchors; intermediates only help build the chain. */
 MP_API int32_t mp_store_add_intermediate( MP_STORE store,
                                           const uint8_t * cert, size_t certlen );
 MP_API int32_t mp_store_add_crl( MP_STORE store,
@@ -180,6 +194,7 @@ MP_API int32_t mp_store_set_crl_check( MP_STORE store, int32_t enable );
 MP_API int32_t mp_verify( MP_STORE store, MP_CERT cert,
                           MP_CHAIN * chain );
 
+/* Error of the last mp_verify on the store; code 0 after a success. */
 MP_API int32_t mp_verify_last_error( MP_STORE store,
                                      int32_t * code, int32_t * depth,
                                      const uint8_t ** msg, size_t * msglen );
@@ -203,6 +218,8 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
                                         MP_OCSP_RESP * resp );
 MP_API int32_t mp_ocsp_response_close( MP_OCSP_RESP resp );
 
+/* Status and times come from the response's own fields whether or not its
+ * signature verified: trust them only when mp_ocsp_verified reports 1. */
 MP_API int32_t mp_ocsp_status( MP_OCSP_RESP resp, int32_t * status );
 MP_API int32_t mp_ocsp_verified( MP_OCSP_RESP resp, int32_t * verified );
 MP_API int32_t mp_ocsp_this_update( MP_OCSP_RESP resp, int64_t * time );
@@ -216,6 +233,8 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
 /* -- Chain --------------------------------------------------------- */
 
 MP_API int32_t mp_chain_count( MP_CHAIN chain, size_t * count );
+/* The certificate is owned by the chain: valid until mp_chain_close and
+ * never passed to mp_cert_close. */
 MP_API int32_t mp_chain_cert( MP_CHAIN chain, size_t index,
                               MP_CERT * cert );
 MP_API int32_t mp_chain_close( MP_CHAIN chain );

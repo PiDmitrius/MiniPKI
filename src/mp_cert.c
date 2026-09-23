@@ -1085,7 +1085,14 @@ MP_API int32_t mp_cert_der( MP_CERT cert,
         return MP_ERR_INVALID_ARG;
 
     if( !cert->der )
-        return MP_ERR_UNEXPECTED;
+    {
+        uint8_t * buf = NULL;
+        int len = i2d_X509( cert->x509, &buf );
+        if( len <= 0 )
+            return MP_ERR_OPENSSL;
+        cert->der = buf;
+        cert->derlen = (size_t)len;
+    }
 
     *der = cert->der;
     *derlen = cert->derlen;

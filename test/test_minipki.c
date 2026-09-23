@@ -206,6 +206,14 @@ static int test_cert_parse( void )
     printf( "  OK: DER round-trip (%zu bytes)\n", derlen );
     g_tests_passed++;
 
+    uint8_t * padded = malloc( datalen + 1 );
+    memcpy( padded, data, datalen );
+    padded[datalen] = 0;
+    MP_CERT extra = NULL;
+    EXPECT( mp_cert_parse( ctx, padded, datalen + 1, &extra ), MP_ERR_PARSE,
+            "mp_cert_parse(trailing byte)" );
+    free( padded );
+
     CHECK( mp_cert_close( cert ), "mp_cert_close" );
     CHECK( mp_close( ctx ), "mp_close" );
     free( data );
@@ -344,6 +352,14 @@ static int test_crl_verify( void )
     CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
     CHECK( mp_cert_parse( ctx, ca_buf, ca_len, &ca ), "mp_cert_parse(CA)" );
     CHECK( mp_crl_parse( ctx, crl_buf, crl_len, &crl ), "mp_crl_parse" );
+
+    uint8_t * padded = malloc( crl_len + 1 );
+    memcpy( padded, crl_buf, crl_len );
+    padded[crl_len] = 0;
+    MP_CRL extra = NULL;
+    EXPECT( mp_crl_parse( ctx, padded, crl_len + 1, &extra ), MP_ERR_PARSE,
+            "mp_crl_parse(trailing byte)" );
+    free( padded );
 
     /* Good signature */
     EXPECT( mp_crl_verify( crl, ca ), MP_OK, "mp_crl_verify(valid)" );

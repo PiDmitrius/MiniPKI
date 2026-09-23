@@ -151,6 +151,10 @@ struct MP_BAG_S
 };
 
 /* Shared helpers (mp_cert.c) */
+/* DER decoders that accept the input only if it is consumed exactly. */
+X509 * mp_d2i_x509( const uint8_t * data, size_t datalen );
+X509_CRL * mp_d2i_crl( const uint8_t * data, size_t datalen );
+
 char * format_name( X509_NAME * name );
 char * mp_octet_to_hex( const ASN1_OCTET_STRING * oct );
 

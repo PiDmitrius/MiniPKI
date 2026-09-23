@@ -37,13 +37,12 @@ MP_API int32_t mp_store_close( MP_STORE store )
 MP_API int32_t mp_store_add_root( MP_STORE store,
                                   const uint8_t * cert, size_t certlen )
 {
-    const uint8_t * p = cert;
     X509 * x;
 
     if( !store || !cert || !certlen )
         return MP_ERR_INVALID_ARG;
 
-    x = d2i_X509( NULL, &p, (long)certlen );
+    x = mp_d2i_x509( cert, certlen );
     if( !x )
         return MP_ERR_PARSE;
 
@@ -68,13 +67,12 @@ MP_API int32_t mp_store_add_intermediate( MP_STORE store,
 MP_API int32_t mp_store_add_crl( MP_STORE store,
                                  const uint8_t * crl, size_t crllen )
 {
-    const uint8_t * p = crl;
     X509_CRL * c;
 
     if( !store || !crl || !crllen )
         return MP_ERR_INVALID_ARG;
 
-    c = d2i_X509_CRL( NULL, &p, (long)crllen );
+    c = mp_d2i_crl( crl, crllen );
     if( !c )
         return MP_ERR_PARSE;
 

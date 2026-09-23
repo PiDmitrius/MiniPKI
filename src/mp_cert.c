@@ -84,8 +84,8 @@ MP_API int32_t mp_bag_parse( MP_CTX ctx,
         return MP_ERR_UNEXPECTED;
 
     /* Try DER X.509 (single cert) */
-    const uint8_t * p = data;
-    X509 * x = d2i_X509( NULL, &p, (long)datalen );
+    const uint8_t * p;
+    X509 * x = mp_d2i_x509( data, datalen );
     if( x )
     {
         bag_append( bag, x );
@@ -232,19 +232,28 @@ static X509 * try_base64_x509( const uint8_t * data, size_t datalen )
 
     X509 * x = NULL;
     if( len > 0 )
-    {
-        const uint8_t * p = buf;
-        x = d2i_X509( NULL, &p, len );
-    }
+        x = mp_d2i_x509( buf, (size_t)len );
     free( buf );
     return x;
 }
 
 /* Auto-detect DER, PEM, raw base64, or PKCS#7 and parse */
-static X509 * parse_x509( const uint8_t * data, size_t datalen )
+X509 * mp_d2i_x509( const uint8_t * data, size_t datalen )
 {
     const uint8_t * p = data;
     X509 * x = d2i_X509( NULL, &p, (long)datalen );
+    if( x && p != data + datalen )
+    {
+        X509_free( x );
+        return NULL;
+    }
+    return x;
+}
+
+static X509 * parse_x509( const uint8_t * data, size_t datalen )
+{
+    const uint8_t * p;
+    X509 * x = mp_d2i_x509( data, datalen );
     if( x )
         return x;
 

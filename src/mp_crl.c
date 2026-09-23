@@ -1,18 +1,29 @@
 /* mp_crl.c - CRL parsing and accessors */
 #include "mp_internal.h"
 
+X509_CRL * mp_d2i_crl( const uint8_t * data, size_t datalen )
+{
+    const uint8_t * p = data;
+    X509_CRL * x = d2i_X509_CRL( NULL, &p, (long)datalen );
+    if( x && p != data + datalen )
+    {
+        X509_CRL_free( x );
+        return NULL;
+    }
+    return x;
+}
+
 MP_API int32_t mp_crl_parse( MP_CTX ctx,
                              const uint8_t * data, size_t datalen,
                              MP_CRL * crl )
 {
     struct MP_CRL_S * c;
-    const uint8_t * p = data;
     X509_CRL * x;
 
     if( !ctx || !data || !datalen || !crl )
         return MP_ERR_INVALID_ARG;
 
-    x = d2i_X509_CRL( NULL, &p, (long)datalen );
+    x = mp_d2i_crl( data, datalen );
     if( !x )
     {
         /* Try PEM */

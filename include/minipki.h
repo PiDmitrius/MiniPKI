@@ -7,8 +7,8 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 1
-#define MP_VERSION_MINOR 0
-#define MP_VERSION_PATCH 3
+#define MP_VERSION_MINOR 1
+#define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
     ( ( MP_VERSION_MAJOR << 16 ) | ( MP_VERSION_MINOR << 8 ) | MP_VERSION_PATCH )
@@ -137,6 +137,10 @@ MP_API int32_t mp_crl_parse( MP_CTX ctx,
                              const uint8_t * data, size_t datalen,
                              MP_CRL * crl );
 MP_API int32_t mp_crl_close( MP_CRL crl );
+
+/* DER encoding of the parsed CRL, whatever form it was parsed from. */
+MP_API int32_t mp_crl_der( MP_CRL crl,
+                           const uint8_t ** der, size_t * derlen );
 
 MP_API int32_t mp_crl_issuer( MP_CRL crl,
                               const uint8_t ** out, size_t * outlen );

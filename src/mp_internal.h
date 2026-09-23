@@ -90,6 +90,9 @@ struct MP_CERT_S
 struct MP_CRL_S
 {
     X509_CRL      * crl;
+    /* cached DER encoding, on demand */
+    uint8_t       * der;
+    size_t          derlen;
     char          * issuer;
     uint8_t       * issuer_name_der;
     size_t          issuer_name_derlen;

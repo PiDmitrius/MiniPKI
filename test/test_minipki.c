@@ -361,6 +361,17 @@ static int test_crl_verify( void )
             "mp_crl_parse(trailing byte)" );
     free( padded );
 
+    const uint8_t * crl_der;
+    size_t crl_derlen;
+    CHECK( mp_crl_der( crl, &crl_der, &crl_derlen ), "mp_crl_der" );
+    if( crl_derlen != crl_len || memcmp( crl_der, crl_buf, crl_len ) != 0 )
+    {
+        fprintf( stderr, "FAIL: CRL DER differs from the input\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    g_tests_passed++;
+
     /* Good signature */
     EXPECT( mp_crl_verify( crl, ca ), MP_OK, "mp_crl_verify(valid)" );
 

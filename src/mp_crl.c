@@ -48,12 +48,34 @@ MP_API int32_t mp_crl_parse( MP_CTX ctx,
     return MP_OK;
 }
 
+MP_API int32_t mp_crl_der( MP_CRL crl,
+                           const uint8_t ** der, size_t * derlen )
+{
+    if( !crl || !der || !derlen )
+        return MP_ERR_INVALID_ARG;
+
+    if( !crl->der )
+    {
+        uint8_t * buf = NULL;
+        int len = i2d_X509_CRL( crl->crl, &buf );
+        if( len <= 0 )
+            return MP_ERR_OPENSSL;
+        crl->der = buf;
+        crl->derlen = (size_t)len;
+    }
+
+    *der = crl->der;
+    *derlen = crl->derlen;
+    return MP_OK;
+}
+
 MP_API int32_t mp_crl_close( MP_CRL crl )
 {
     if( !crl )
         return MP_ERR_INVALID_ARG;
 
     X509_CRL_free( crl->crl );
+    OPENSSL_free( crl->der );
     OPENSSL_free( crl->issuer );
     OPENSSL_free( crl->issuer_name_der );
     free( crl->aki );

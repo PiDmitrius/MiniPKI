@@ -261,6 +261,17 @@ static int test_verify( void )
            "chain cert subject" );
     printf( "  Chain[0] subject: %.*s\n", (int)chain_subjlen, chain_subj );
 
+    const uint8_t * chain_der, * leaf_der;
+    size_t chain_derlen, leaf_derlen;
+    CHECK( mp_cert_der( chain_cert, &chain_der, &chain_derlen ), "chain cert DER" );
+    CHECK( mp_cert_der( cert, &leaf_der, &leaf_derlen ), "leaf DER" );
+    if( chain_derlen != leaf_derlen || memcmp( chain_der, leaf_der, leaf_derlen ) != 0 )
+    {
+        printf( "  FAIL: chain cert DER differs from the input\n" );
+        return 1;
+    }
+    g_tests_passed++;
+
     CHECK( mp_chain_close( chain ), "mp_chain_close" );
     CHECK( mp_cert_close( cert ), "mp_cert_close" );
     CHECK( mp_store_close( store ), "mp_store_close" );

@@ -99,7 +99,7 @@ $(call outlib,$(1)): $(call MP_OBJS,$(1))
 	zig cc -target $$(ZIG_$(1)) -shared -s -o $$@ $$^ \
 		$(call PLAT_LDFLAGS,$(1)) \
 		$(if $(findstring windows,$(1)),-Wl$(,)--out-implib$(,)out/$(1)/minipki.lib,) \
-		$(if $(findstring linux,$(1)),-Wl$(,)-soname$(,)$(PFX_$(1))minipki$(EXT_$(1)),) \
+		$(if $(findstring linux,$(1)),-Wl$(,)-soname$(,)$(PFX_$(1))minipki$(EXT_$(1)) -Wl$(,)--version-script$(,)$(ROOT)/build/minipki.map,) \
 		$(if $(findstring macos,$(1)),-Wl$(,)-install_name$(,)@rpath/$(PFX_$(1))minipki$(EXT_$(1)),)
 
 # Test binary (dynamic)

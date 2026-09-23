@@ -1,5 +1,6 @@
 /* mp_crl.c - CRL parsing and accessors */
 #include "mp_internal.h"
+#include <limits.h>
 
 X509_CRL * mp_d2i_crl( const uint8_t * data, size_t datalen )
 {
@@ -20,21 +21,25 @@ MP_API int32_t mp_crl_parse( MP_CTX ctx,
     struct MP_CRL_S * c;
     X509_CRL * x;
 
-    if( !ctx || !data || !datalen || !crl )
+    if( !ctx || !data || !datalen || datalen > INT_MAX || !crl )
         return MP_ERR_INVALID_ARG;
 
-    x = mp_d2i_crl( data, datalen );
-    if( !x )
+    ERR_set_mark();
+    if( mp_is_binary( data, datalen ) )
+        x = mp_d2i_crl( data, datalen );
+    else
     {
-        /* Try PEM */
+        x = NULL;
         BIO * bio = BIO_new_mem_buf( data, (int)datalen );
-        if( !bio )
-            return MP_ERR_PARSE;
-        x = PEM_read_bio_X509_CRL( bio, NULL, NULL, NULL );
-        BIO_free( bio );
-        if( !x )
-            return MP_ERR_PARSE;
+        if( bio )
+        {
+            x = PEM_read_bio_X509_CRL( bio, NULL, NULL, NULL );
+            BIO_free( bio );
+        }
     }
+    ERR_pop_to_mark();
+    if( !x )
+        return MP_ERR_PARSE;
 
     c = calloc( 1, sizeof( *c ) );
     if( !c )
@@ -148,7 +153,10 @@ MP_API int32_t mp_crl_next_update( MP_CRL crl, int64_t * time )
 
     const ASN1_TIME * next = X509_CRL_get0_nextUpdate( crl->crl );
     if( !next )
-        return MP_ERR_OPENSSL;
+    {
+        *time = 0;
+        return MP_OK;
+    }
 
     if( !ASN1_TIME_to_tm( next, &tm ) )
         return MP_ERR_OPENSSL;

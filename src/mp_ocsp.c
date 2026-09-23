@@ -1,6 +1,32 @@
 /* mp_ocsp.c - OCSP request/response */
 #include "mp_internal.h"
-#include <stdio.h>
+#include <limits.h>
+
+/* The single response for cert, matched by a CertID built with the
+   response's own hash algorithm; NULL if there is none. */
+static OCSP_SINGLERESP * find_single( OCSP_BASICRESP * basic,
+                                      X509 * cert, X509 * issuer )
+{
+    for( int i = 0; i < OCSP_resp_count( basic ); i++ )
+    {
+        OCSP_SINGLERESP * single = OCSP_resp_get0( basic, i );
+        OCSP_CERTID * sid = (OCSP_CERTID *)OCSP_SINGLERESP_get0_id( single );
+        ASN1_OBJECT * md_oid = NULL;
+        if( !OCSP_id_get0_info( NULL, &md_oid, NULL, NULL, sid ) )
+            continue;
+        const EVP_MD * md = EVP_get_digestbyobj( md_oid );
+        if( !md )
+            continue;
+        OCSP_CERTID * cid = OCSP_cert_to_id( md, cert, issuer );
+        if( !cid )
+            continue;
+        int match = OCSP_id_cmp( cid, sid ) == 0;
+        OCSP_CERTID_free( cid );
+        if( match )
+            return single;
+    }
+    return NULL;
+}
 
 /* ── Request ─────────────────────────────────────────────── */
 
@@ -81,17 +107,22 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
 {
     OCSP_RESPONSE  * resp = NULL;
     OCSP_BASICRESP * basic = NULL;
-    OCSP_CERTID    * cid = NULL;
+    OCSP_SINGLERESP * single;
     X509_STORE     * store = NULL;
     struct MP_OCSP_RESP_S * r = NULL;
     const uint8_t  * p;
     int rc;
 
-    if( !ctx || !cert || !issuer || !data || !datalen || !out )
+    if( !ctx || !cert || !issuer || !data || !datalen || datalen > INT_MAX || !out )
         return MP_ERR_INVALID_ARG;
 
     p = data;
     resp = d2i_OCSP_RESPONSE( NULL, &p, (long)datalen );
+    if( resp && p != data + datalen )
+    {
+        OCSP_RESPONSE_free( resp );
+        resp = NULL;
+    }
     if( !resp )
         return MP_ERR_PARSE;
 
@@ -136,67 +167,41 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
         if( untrusted )
             sk_X509_push( untrusted, issuer->x509 );
 
-        ERR_clear_error();
-        rc = OCSP_basic_verify( basic, untrusted, store, 0 );
-        if( rc > 0 )
-        {
-            r->verified = 1;
-        }
-        else
-        {
-            unsigned long err = ERR_get_error();
-            if( err )
-            {
-                char buf[256];
-                ERR_error_string_n( err, buf, sizeof( buf ) );
-                fprintf( stderr, "[mp_ocsp] verify failed: %s\n", buf );
-            }
-            else
-            {
-                fprintf( stderr, "[mp_ocsp] verify returned %d (no error)\n", rc );
-            }
-            r->verified = 0;
-        }
+        ERR_set_mark();
+        r->verified = OCSP_basic_verify( basic, untrusted, store, 0 ) > 0;
+        ERR_pop_to_mark();
         if( untrusted )
             sk_X509_free( untrusted );
         X509_STORE_free( store );
     }
 
     /* Find status for our specific cert */
-    cid = OCSP_cert_to_id( EVP_sha1(), cert->x509, issuer->x509 );
-    if( cid )
+    single = find_single( basic, cert->x509, issuer->x509 );
+    if( single )
     {
         int status, reason;
         ASN1_GENERALIZEDTIME * revtime = NULL;
         ASN1_GENERALIZEDTIME * thisupd = NULL;
         ASN1_GENERALIZEDTIME * nextupd = NULL;
 
-        if( OCSP_resp_find_status( basic, cid, &status, &reason,
-                                    &revtime, &thisupd, &nextupd ) )
+        status = OCSP_single_get0_status( single, &reason, &revtime, &thisupd, &nextupd );
+        switch( status )
         {
-            switch( status )
-            {
-            case V_OCSP_CERTSTATUS_GOOD:    r->status = MP_OCSP_GOOD; break;
-            case V_OCSP_CERTSTATUS_REVOKED: r->status = MP_OCSP_REVOKED; break;
-            default:                        r->status = MP_OCSP_UNKNOWN; break;
-            }
-
-            struct tm tm;
-            if( thisupd && ASN1_TIME_to_tm( thisupd, &tm ) )
-                r->this_update = (int64_t)timegm( &tm );
-            if( nextupd && ASN1_TIME_to_tm( nextupd, &tm ) )
-                r->next_update = (int64_t)timegm( &tm );
-            if( revtime && ASN1_TIME_to_tm( revtime, &tm ) )
-                r->revoked_at = (int64_t)timegm( &tm );
-
-            if( status == V_OCSP_CERTSTATUS_REVOKED )
-                r->revoke_reason = reason;
+        case V_OCSP_CERTSTATUS_GOOD:    r->status = MP_OCSP_GOOD; break;
+        case V_OCSP_CERTSTATUS_REVOKED: r->status = MP_OCSP_REVOKED; break;
+        default:                        r->status = MP_OCSP_UNKNOWN; break;
         }
-        else
-        {
-            r->status = MP_OCSP_UNKNOWN;
-        }
-        OCSP_CERTID_free( cid );
+
+        struct tm tm;
+        if( thisupd && ASN1_TIME_to_tm( thisupd, &tm ) )
+            r->this_update = (int64_t)timegm( &tm );
+        if( nextupd && ASN1_TIME_to_tm( nextupd, &tm ) )
+            r->next_update = (int64_t)timegm( &tm );
+        if( revtime && ASN1_TIME_to_tm( revtime, &tm ) )
+            r->revoked_at = (int64_t)timegm( &tm );
+
+        if( status == V_OCSP_CERTSTATUS_REVOKED )
+            r->revoke_reason = reason;
     }
     else
     {

@@ -1,6 +1,5 @@
 /* mp_ctx.c - Context management */
 #include "mp_internal.h"
-#include <stdio.h>
 
 /* ENGINE API is deprecated in OpenSSL 3.x but still required for
    GOST signature verification (provider mode does not handle
@@ -10,6 +9,34 @@
 MP_API uint32_t mp_version( void )
 {
     return MP_VERSION;
+}
+
+/* The GOST engine named by MINIPKI_GOST_ENGINE is loaded once per process,
+   becomes the default for all methods and is never unloaded. */
+static CRYPTO_ONCE gost_once = CRYPTO_ONCE_STATIC_INIT;
+static ENGINE * gost_engine;
+static int gost_failed;
+
+static void load_gost( void )
+{
+    const char * path = getenv( "MINIPKI_GOST_ENGINE" );
+    if( !path || !*path )
+        return;
+
+    ENGINE_load_dynamic();
+    ENGINE * dyn = ENGINE_by_id( "dynamic" );
+    if( dyn &&
+        ENGINE_ctrl_cmd_string( dyn, "SO_PATH", path, 0 ) &&
+        ENGINE_ctrl_cmd_string( dyn, "ID", "gost", 0 ) &&
+        ENGINE_ctrl_cmd_string( dyn, "LOAD", NULL, 0 ) &&
+        ENGINE_init( dyn ) )
+    {
+        ENGINE_set_default( dyn, ENGINE_METHOD_ALL );
+        gost_engine = dyn;
+        return;
+    }
+    ENGINE_free( dyn );
+    gost_failed = 1;
 }
 
 MP_API int32_t mp_open( int32_t type, MP_CTX * ctx )
@@ -22,11 +49,20 @@ MP_API int32_t mp_open( int32_t type, MP_CTX * ctx )
     if( type != MP_TYPE_OPENSSL )
         return MP_ERR_INVALID_ARG;
 
+    ERR_set_mark();
+    if( !CRYPTO_THREAD_run_once( &gost_once, load_gost ) || gost_failed )
+    {
+        ERR_pop_to_mark();
+        return MP_ERR_OPENSSL;
+    }
+    ERR_pop_to_mark();
+
     c = calloc( 1, sizeof( *c ) );
     if( !c )
         return MP_ERR_UNEXPECTED;
 
     c->type = type;
+    c->eng_gost = gost_engine;
 
     /* Load default provider into global context */
     c->prov_default = OSSL_PROVIDER_load( NULL, "default" );
@@ -34,42 +70,6 @@ MP_API int32_t mp_open( int32_t type, MP_CTX * ctx )
     {
         free( c );
         return MP_ERR_OPENSSL;
-    }
-
-    /* Load gost-engine as dynamic ENGINE — provides all GOST algorithms
-       (signatures, hashes, key management) and X509 verify support. */
-    const char * eng_path = getenv( "MINIPKI_GOST_ENGINE" );
-    if( eng_path && *eng_path )
-    {
-        ENGINE_load_dynamic();
-        ENGINE * dyn = ENGINE_by_id( "dynamic" );
-        if( !dyn )
-        {
-            fprintf( stderr, "[minipki] ENGINE_by_id(dynamic) failed\n" );
-        }
-        else
-        {
-            if( !ENGINE_ctrl_cmd_string( dyn, "SO_PATH", eng_path, 0 ) )
-                fprintf( stderr, "[minipki] SO_PATH %s failed: %s\n",
-                         eng_path, ERR_error_string( ERR_get_error(), NULL ) );
-            if( !ENGINE_ctrl_cmd_string( dyn, "ID", "gost", 0 ) )
-                fprintf( stderr, "[minipki] ID gost failed\n" );
-            if( !ENGINE_ctrl_cmd_string( dyn, "LOAD", NULL, 0 ) )
-                fprintf( stderr, "[minipki] LOAD failed: %s\n",
-                         ERR_error_string( ERR_get_error(), NULL ) );
-            if( !ENGINE_init( dyn ) )
-            {
-                fprintf( stderr, "[minipki] ENGINE_init failed: %s\n",
-                         ERR_error_string( ERR_get_error(), NULL ) );
-                ENGINE_free( dyn );
-            }
-            else
-            {
-                ENGINE_set_default( dyn, ENGINE_METHOD_ALL );
-                c->eng_gost = dyn;
-                fprintf( stderr, "[minipki] gost engine loaded from %s\n", eng_path );
-            }
-        }
     }
 
     *ctx = c;
@@ -81,11 +81,6 @@ MP_API int32_t mp_close( MP_CTX ctx )
     if( !ctx )
         return MP_ERR_INVALID_ARG;
 
-    if( ctx->eng_gost )
-    {
-        ENGINE_finish( ctx->eng_gost );
-        ENGINE_free( ctx->eng_gost );
-    }
     if( ctx->prov_default )
         OSSL_PROVIDER_unload( ctx->prov_default );
 

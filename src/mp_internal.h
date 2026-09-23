@@ -29,7 +29,7 @@ struct MP_CTX_S
 {
     int32_t         type;
     OSSL_PROVIDER * prov_default;
-    ENGINE        * eng_gost;
+    ENGINE        * eng_gost;     /* process-wide, not owned */
 };
 
 /* ── Certificate ──────────────────────────────────────────── */
@@ -103,8 +103,9 @@ struct MP_CRL_S
 
 struct MP_STORE_S
 {
-    MP_CTX          ctx;
-    X509_STORE    * store;
+    MP_CTX            ctx;
+    X509_STORE      * store;       /* trust anchors and CRLs */
+    STACK_OF(X509)  * untrusted;   /* intermediates for chain building */
     int             last_err_code;
     int             last_err_depth;
     char            last_err_msg[256];
@@ -153,10 +154,16 @@ struct MP_BAG_S
     size_t          count;
 };
 
-/* Shared helpers (mp_cert.c) */
-/* DER decoders that accept the input only if it is consumed exactly. */
+/* DER decoders that accept the input only if it is consumed exactly
+   (mp_cert.c, mp_crl.c). */
 X509 * mp_d2i_x509( const uint8_t * data, size_t datalen );
 X509_CRL * mp_d2i_crl( const uint8_t * data, size_t datalen );
+
+/* Input starting with a DER SEQUENCE is binary and parsed only as DER. */
+int mp_is_binary( const uint8_t * data, size_t datalen );
+
+/* Frees the cached fields of a certificate wrapper, not its X509. */
+void mp_cert_free_fields( struct MP_CERT_S * cert );
 
 char * format_name( X509_NAME * name );
 char * mp_octet_to_hex( const ASN1_OCTET_STRING * oct );

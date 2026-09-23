@@ -1,5 +1,8 @@
 /* mp_cert.c - Certificate parsing and accessors */
 #include "mp_internal.h"
+#include <limits.h>
+
+static PKCS7 * d2i_pkcs7_exact( const uint8_t * data, size_t datalen );
 
 static const char hex_digits[] = "0123456789ABCDEF";
 
@@ -75,52 +78,48 @@ MP_API int32_t mp_bag_parse( MP_CTX ctx,
                              MP_BAG * out )
 {
     struct MP_BAG_S * bag;
+    X509 * x;
+    PKCS7 * p7 = NULL;
 
-    if( !ctx || !data || !datalen || !out )
+    if( !ctx || !data || !datalen || datalen > INT_MAX || !out )
         return MP_ERR_INVALID_ARG;
 
     bag = calloc( 1, sizeof( *bag ) );
     if( !bag )
         return MP_ERR_UNEXPECTED;
 
-    /* Try DER X.509 (single cert) */
-    const uint8_t * p;
-    X509 * x = mp_d2i_x509( data, datalen );
-    if( x )
+    ERR_set_mark();
+    if( mp_is_binary( data, datalen ) )
     {
-        bag_append( bag, x );
-        X509_free( x );
-        *out = bag;
-        return MP_OK;
-    }
-
-    /* Try PEM X.509 (one or many concatenated) */
-    BIO * bio = BIO_new_mem_buf( data, (int)datalen );
-    if( bio )
-    {
-        while( ( x = PEM_read_bio_X509( bio, NULL, NULL, NULL ) ) != NULL )
+        x = mp_d2i_x509( data, datalen );
+        if( x )
         {
             bag_append( bag, x );
             X509_free( x );
         }
-        BIO_free( bio );
+        else
+            p7 = d2i_pkcs7_exact( data, datalen );
     }
-    if( bag->count > 0 )
+    else
     {
-        *out = bag;
-        return MP_OK;
-    }
-
-    /* Try PKCS#7 DER */
-    p = data;
-    PKCS7 * p7 = d2i_PKCS7( NULL, &p, (long)datalen );
-    if( !p7 )
-    {
-        bio = BIO_new_mem_buf( data, (int)datalen );
+        BIO * bio = BIO_new_mem_buf( data, (int)datalen );
         if( bio )
         {
-            p7 = PEM_read_bio_PKCS7( bio, NULL, NULL, NULL );
+            while( ( x = PEM_read_bio_X509( bio, NULL, NULL, NULL ) ) != NULL )
+            {
+                bag_append( bag, x );
+                X509_free( x );
+            }
             BIO_free( bio );
+        }
+        if( bag->count == 0 )
+        {
+            bio = BIO_new_mem_buf( data, (int)datalen );
+            if( bio )
+            {
+                p7 = PEM_read_bio_PKCS7( bio, NULL, NULL, NULL );
+                BIO_free( bio );
+            }
         }
     }
     if( p7 )
@@ -128,6 +127,7 @@ MP_API int32_t mp_bag_parse( MP_CTX ctx,
         bag_append_pkcs7_certs( bag, p7 );
         PKCS7_free( p7 );
     }
+    ERR_pop_to_mark();
 
     if( bag->count == 0 )
     {
@@ -237,7 +237,6 @@ static X509 * try_base64_x509( const uint8_t * data, size_t datalen )
     return x;
 }
 
-/* Auto-detect DER, PEM, raw base64, or PKCS#7 and parse */
 X509 * mp_d2i_x509( const uint8_t * data, size_t datalen )
 {
     const uint8_t * p = data;
@@ -250,51 +249,61 @@ X509 * mp_d2i_x509( const uint8_t * data, size_t datalen )
     return x;
 }
 
+int mp_is_binary( const uint8_t * data, size_t datalen )
+{
+    return datalen > 0 && data[0] == 0x30;
+}
+
+static PKCS7 * d2i_pkcs7_exact( const uint8_t * data, size_t datalen )
+{
+    const uint8_t * p = data;
+    PKCS7 * p7 = d2i_PKCS7( NULL, &p, (long)datalen );
+    if( p7 && p != data + datalen )
+    {
+        PKCS7_free( p7 );
+        return NULL;
+    }
+    return p7;
+}
+
+/* Binary input (a DER SEQUENCE) is parsed as exact DER X.509 or PKCS#7;
+   anything else as PEM X.509, raw base64 X.509 or PEM PKCS#7. */
 static X509 * parse_x509( const uint8_t * data, size_t datalen )
 {
-    const uint8_t * p;
-    X509 * x = mp_d2i_x509( data, datalen );
-    if( x )
-        return x;
+    X509 * x = NULL;
+    PKCS7 * p7 = NULL;
 
-    /* Try PEM X.509 */
-    BIO * bio = BIO_new_mem_buf( data, (int)datalen );
-    if( !bio )
-        return NULL;
-    x = PEM_read_bio_X509( bio, NULL, NULL, NULL );
-    BIO_free( bio );
-    if( x )
-        return x;
-
-    /* Try raw base64 (no PEM headers) */
-    x = try_base64_x509( data, datalen );
-    if( x )
-        return x;
-
-    /* Try PKCS#7 DER */
-    p = data;
-    PKCS7 * p7 = d2i_PKCS7( NULL, &p, (long)datalen );
+    if( mp_is_binary( data, datalen ) )
+    {
+        x = mp_d2i_x509( data, datalen );
+        if( !x )
+            p7 = d2i_pkcs7_exact( data, datalen );
+    }
+    else
+    {
+        BIO * bio = BIO_new_mem_buf( data, (int)datalen );
+        if( bio )
+        {
+            x = PEM_read_bio_X509( bio, NULL, NULL, NULL );
+            BIO_free( bio );
+        }
+        if( !x )
+            x = try_base64_x509( data, datalen );
+        if( !x )
+        {
+            bio = BIO_new_mem_buf( data, (int)datalen );
+            if( bio )
+            {
+                p7 = PEM_read_bio_PKCS7( bio, NULL, NULL, NULL );
+                BIO_free( bio );
+            }
+        }
+    }
     if( p7 )
     {
         x = extract_from_pkcs7( p7 );
         PKCS7_free( p7 );
-        if( x )
-            return x;
     }
-
-    /* Try PKCS#7 PEM */
-    bio = BIO_new_mem_buf( data, (int)datalen );
-    if( bio )
-    {
-        p7 = PEM_read_bio_PKCS7( bio, NULL, NULL, NULL );
-        BIO_free( bio );
-        if( p7 )
-        {
-            x = extract_from_pkcs7( p7 );
-            PKCS7_free( p7 );
-        }
-    }
-
     return x;
 }
 
@@ -307,10 +316,12 @@ MP_API int32_t mp_cert_parse( MP_CTX ctx,
     uint8_t * der = NULL;
     int derlen;
 
-    if( !ctx || !data || !datalen || !cert )
+    if( !ctx || !data || !datalen || datalen > INT_MAX || !cert )
         return MP_ERR_INVALID_ARG;
 
+    ERR_set_mark();
     x = parse_x509( data, datalen );
+    ERR_pop_to_mark();
     if( !x )
         return MP_ERR_PARSE;
 
@@ -335,12 +346,8 @@ MP_API int32_t mp_cert_parse( MP_CTX ctx,
     return MP_OK;
 }
 
-MP_API int32_t mp_cert_close( MP_CERT cert )
+void mp_cert_free_fields( struct MP_CERT_S * cert )
 {
-    if( !cert )
-        return MP_ERR_INVALID_ARG;
-
-    X509_free( cert->x509 );
     OPENSSL_free( cert->der );
     OPENSSL_free( cert->subject );
     OPENSSL_free( cert->issuer );
@@ -371,9 +378,48 @@ MP_API int32_t mp_cert_close( MP_CERT cert )
     for( size_t i = 0; i < cert->cdp_count; i++ )
         free( cert->cdp_urls[i] );
     free( cert->cdp_urls );
+}
 
+MP_API int32_t mp_cert_close( MP_CERT cert )
+{
+    if( !cert )
+        return MP_ERR_INVALID_ARG;
+
+    X509_free( cert->x509 );
+    mp_cert_free_fields( cert );
     free( cert );
     return MP_OK;
+}
+
+/* Dotted text of an OID, allocated to its full length. */
+static char * obj_txt( const ASN1_OBJECT * obj )
+{
+    int len = OBJ_obj2txt( NULL, 0, obj, 1 );
+    if( len <= 0 )
+        return NULL;
+    char * buf = malloc( (size_t)len + 1 );
+    if( buf && OBJ_obj2txt( buf, len + 1, obj, 1 ) != len )
+    {
+        free( buf );
+        return NULL;
+    }
+    return buf;
+}
+
+/* Copy of a URI, or NULL if it has an embedded NUL. */
+static char * uri_dup( const ASN1_IA5STRING * uri )
+{
+    int len = ASN1_STRING_length( uri );
+    const unsigned char * data = ASN1_STRING_get0_data( uri );
+    if( len < 0 || memchr( data, 0, (size_t)len ) )
+        return NULL;
+    char * s = malloc( (size_t)len + 1 );
+    if( s )
+    {
+        memcpy( s, data, (size_t)len );
+        s[len] = '\0';
+    }
+    return s;
 }
 
 char * format_name( X509_NAME * name )
@@ -516,19 +562,7 @@ MP_API int32_t mp_cert_key_algorithm( MP_CERT cert,
         X509_PUBKEY * pub = X509_get_X509_PUBKEY( cert->x509 );
         ASN1_OBJECT * oid = NULL;
         if( pub && X509_PUBKEY_get0_param( &oid, NULL, NULL, NULL, pub ) && oid )
-        {
-            char buf[128];
-            int len = OBJ_obj2txt( buf, (int)sizeof( buf ), oid, 1 );
-            if( len > 0 )
-            {
-                cert->key_algorithm = malloc( (size_t)len + 1 );
-                if( cert->key_algorithm )
-                {
-                    memcpy( cert->key_algorithm, buf, (size_t)len );
-                    cert->key_algorithm[len] = '\0';
-                }
-            }
-        }
+            cert->key_algorithm = obj_txt( oid );
     }
 
     if( !cert->key_algorithm )
@@ -636,23 +670,15 @@ static void mp_cert_cache_eku( MP_CERT cert )
         return;
     }
 
+    size_t idx = 0;
     for( int i = 0; i < n; i++ )
     {
-        ASN1_OBJECT * obj = sk_ASN1_OBJECT_value( eku, i );
-        char buf[128];
         /* always return raw OID, frontend resolves names */
-        int len = OBJ_obj2txt( buf, (int)sizeof( buf ), obj, 1 );
-        if( len > 0 )
-        {
-            cert->eku_oids[i] = malloc( (size_t)len + 1 );
-            if( cert->eku_oids[i] )
-            {
-                memcpy( cert->eku_oids[i], buf, (size_t)len );
-                cert->eku_oids[i][len] = '\0';
-            }
-        }
+        char * oid = obj_txt( sk_ASN1_OBJECT_value( eku, i ) );
+        if( oid )
+            cert->eku_oids[idx++] = oid;
     }
-    cert->eku_count = (size_t)n;
+    cert->eku_count = idx;
 
     EXTENDED_KEY_USAGE_free( eku );
 }
@@ -931,15 +957,9 @@ static void mp_cert_cache_aia_all( MP_CERT cert )
         if( !target )
             continue;
 
-        ASN1_IA5STRING * uri = ad->location->d.uniformResourceIdentifier;
-        int len = ASN1_STRING_length( uri );
-        target[*idx] = malloc( (size_t)len + 1 );
-        if( target[*idx] )
-        {
-            memcpy( target[*idx], ASN1_STRING_get0_data( uri ), (size_t)len );
-            target[*idx][len] = '\0';
-        }
-        ( *idx )++;
+        char * url = uri_dup( ad->location->d.uniformResourceIdentifier );
+        if( url )
+            target[( *idx )++] = url;
     }
     cert->aia_count = idx_aia;
     cert->ocsp_count = idx_ocsp;
@@ -1043,16 +1063,9 @@ static void mp_cert_cache_cdp( MP_CERT cert )
                 GENERAL_NAME * gn = sk_GENERAL_NAME_value( names, j );
                 if( gn->type == GEN_URI )
                 {
-                    ASN1_IA5STRING * uri = gn->d.uniformResourceIdentifier;
-                    int len = ASN1_STRING_length( uri );
-                    cert->cdp_urls[idx] = malloc( (size_t)len + 1 );
-                    if( cert->cdp_urls[idx] )
-                    {
-                        memcpy( cert->cdp_urls[idx], ASN1_STRING_get0_data( uri ),
-                                (size_t)len );
-                        cert->cdp_urls[idx][len] = '\0';
-                    }
-                    idx++;
+                    char * url = uri_dup( gn->d.uniformResourceIdentifier );
+                    if( url )
+                        cert->cdp_urls[idx++] = url;
                 }
             }
         }

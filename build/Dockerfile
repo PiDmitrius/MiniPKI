@@ -45,4 +45,8 @@ RUN chmod +x /tmp/build-zig-openssl.sh && \
     rm -rf /tmp/openssl-src-* /tmp/openssl-build-* /tmp/gost-build-* \
            /tmp/zig-wrappers-* /tmp/build-zig-openssl.sh /tmp/gost-engine-src
 
+RUN apt-get update && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src
+ENTRYPOINT ["tini", "--"]

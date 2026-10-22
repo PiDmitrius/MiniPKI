@@ -166,6 +166,8 @@ struct MP_CMS_S
     size_t          contentlen;
     uint8_t       * signer;      /* DER */
     size_t          signerlen;
+    uint8_t       * der;         /* the SignedData, made by mp_cms_sign */
+    size_t          derlen;
 };
 
 /* ── Bag (multi-cert container) ──────────────────────────── */

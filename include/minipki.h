@@ -7,7 +7,7 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 2
-#define MP_VERSION_MINOR 1
+#define MP_VERSION_MINOR 2
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -275,7 +275,20 @@ MP_API int32_t mp_key_sign( MP_KEY key,
 MP_API int32_t mp_cms_verify( MP_CTX ctx,
                               const uint8_t * data, size_t datalen,
                               MP_CMS * cms );
+/* Signs content of the given content type (a dotted OID, NULL for id-data)
+ * with key, whose certificate is signer, into a DER CMS SignedData holding
+ * the content and exactly the certificates certs, which need not include
+ * signer. */
+MP_API int32_t mp_cms_sign( MP_KEY key,
+                            const uint8_t * signer, size_t signerlen,
+                            const char * content_type,
+                            const uint8_t * content, size_t contentlen,
+                            const uint8_t * const * certs, const size_t * certlens,
+                            size_t ncerts,
+                            MP_CMS * cms );
 MP_API int32_t mp_cms_close( MP_CMS cms );
+MP_API int32_t mp_cms_der( MP_CMS cms,
+                           const uint8_t ** der, size_t * derlen );
 
 MP_API int32_t mp_cms_content( MP_CMS cms,
                                const uint8_t ** content, size_t * contentlen );

@@ -782,6 +782,34 @@ static int test_key( void )
     EXPECT( mp_cms_verify( ctx, cms_der, cms_len - 1, &cms ), MP_ERR_PARSE,
             "mp_cms_verify(truncated)" );
     free( cms_der );
+
+    /* mp_cms_sign makes what mp_cms_verify and the openssl CLI accept */
+    const uint8_t * cert_list[] = { ca_der };
+    const size_t cert_lens[] = { ca_len };
+    const uint8_t * signed_der;
+    size_t signed_len;
+    CHECK( mp_cms_sign( key, ca_der, ca_len, "1.3.6.1.5.5.7.12.3",
+                        (const uint8_t *)"hello", 5, cert_list, cert_lens, 1, &cms ),
+           "mp_cms_sign" );
+    CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+    MP_CMS back_cms = NULL;
+    CHECK( mp_cms_verify( ctx, signed_der, signed_len, &back_cms ), "mp_cms_verify(mp_cms_sign)" );
+    CHECK( mp_cms_content( back_cms, &content, &content_len ), "mp_cms_content" );
+    EXPECT( content_len == 5 && !memcmp( content, "hello", 5 ), 1, "signed content" );
+    CHECK( mp_cms_close( back_cms ), "mp_cms_close" );
+    EXPECT( write_file( GOST_DIR "/signed.cms", signed_der, signed_len ) ||
+            gost_cli( "openssl cms -verify -noverify -binary -inform DER -in signed.cms" ), 0,
+            "openssl verifies mp_cms_sign" );
+    EXPECT( gost_cli( "openssl cms -cmsout -print -inform DER -in signed.cms | "
+                      "grep -q 'eContentType: id-cct-PKIResponse'" ), 0,
+            "content type of mp_cms_sign" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    CHECK( mp_cms_sign( key, ca_der, ca_len, NULL, NULL, 0, NULL, NULL, 0, &cms ),
+           "mp_cms_sign(no certificates)" );
+    CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+    EXPECT( mp_cms_verify( ctx, signed_der, signed_len, &back_cms ) != MP_OK, 1,
+            "no certificates in a CMS signed without them" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
     free( ca_der );
 
     EXPECT( mp_key_import( ctx, raw, rawlen - 1, &back ), MP_ERR_INVALID_ARG,

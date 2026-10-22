@@ -521,6 +521,30 @@ static int test_hardening( void )
     size_t msglen;
     CHECK( mp_verify_last_error( store, &code, &depth, &msg, &msglen ), "mp_verify_last_error" );
     EXPECT( code, 0, "last error cleared after success" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(anchor signature checked)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    EXPECT( mp_store_set_flags( store, 0x80 ), MP_ERR_INVALID_ARG,
+            "mp_store_set_flags(unknown flag)" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+
+    /* The signature of a self-signed anchor is checked only on request */
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    d = fx( "root.der", &n );
+    d[ n - 1 ] ^= 1;
+    CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root(bad signature)" );
+    free( d );
+    d = fx( "inter.der", &n );
+    CHECK( mp_store_add_intermediate( store, d, n ), "mp_store_add_intermediate" );
+    free( d );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(anchor signature unchecked)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    EXPECT( mp_verify( store, leaf, &chain ), MP_ERR_VERIFY,
+            "mp_verify(bad anchor signature)" );
+    CHECK( mp_store_set_flags( store, 0 ), "mp_store_set_flags(none)" );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(flag cleared)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
     CHECK( mp_store_close( store ), "mp_store_close" );
 
     /* OCSP status is found with the response's own CertID hash (SHA-256) */
@@ -635,6 +659,8 @@ static int test_key( void )
     MP_KEY key = NULL, back = NULL;
     MP_CERT ca = NULL;
     MP_CRL crl = NULL;
+    MP_STORE store = NULL;
+    MP_CHAIN chain = NULL;
     const uint8_t * raw, * spki, * spki2;
     size_t rawlen, spkilen, spki2len, ca_len, crl_len;
     uint8_t * ca_der, * crl_der;
@@ -687,6 +713,11 @@ static int test_key( void )
     CHECK( mp_cert_parse( ctx, ca_der, ca_len, &ca ), "mp_cert_parse(GOST)" );
     CHECK( mp_crl_parse( ctx, crl_der, crl_len, &crl ), "mp_crl_parse(GOST)" );
     CHECK( mp_crl_verify( crl, ca ), "mp_crl_verify(re-signed)" );
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    CHECK( mp_store_add_root( store, ca_der, ca_len ), "mp_store_add_root(GOST)" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    CHECK( mp_verify( store, ca, &chain ), "mp_verify(re-signed anchor)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
     EXPECT( gost_verify_cert( ca_der, ca_len ), 0,
             "openssl verifies re-signed certificate" );
     EXPECT( gost_verify_crl( crl_der, crl_len ), 0,
@@ -698,6 +729,15 @@ static int test_key( void )
     ca_der[ ca_len - 1 ] ^= 1;
     EXPECT( gost_verify_cert( ca_der, ca_len ) != 0, 1,
             "openssl rejects tampered certificate" );
+    CHECK( mp_cert_close( ca ), "mp_cert_close" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+    CHECK( mp_cert_parse( ctx, ca_der, ca_len, &ca ), "mp_cert_parse(tampered)" );
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    CHECK( mp_store_add_root( store, ca_der, ca_len ), "mp_store_add_root(tampered)" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    EXPECT( mp_verify( store, ca, &chain ), MP_ERR_VERIFY,
+            "mp_verify(tampered anchor)" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
     CHECK( mp_crl_close( crl ), "mp_crl_close" );
     CHECK( mp_cert_close( ca ), "mp_cert_close" );
     free( ca_der );

@@ -6,8 +6,8 @@
 #include <stddef.h>
 
 /* Version */
-#define MP_VERSION_MAJOR 1
-#define MP_VERSION_MINOR 2
+#define MP_VERSION_MAJOR 2
+#define MP_VERSION_MINOR 0
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -188,7 +188,14 @@ MP_API int32_t mp_store_add_intermediate( MP_STORE store,
                                           const uint8_t * cert, size_t certlen );
 MP_API int32_t mp_store_add_crl( MP_STORE store,
                                  const uint8_t * crl, size_t crllen );
-MP_API int32_t mp_store_set_crl_check( MP_STORE store, int32_t enable );
+
+/* Verification flags; none are set on a new store. */
+#define MP_VERIFY_CRL_CHECK     0x1  /* every certificate needs its CRL */
+#define MP_VERIFY_CHECK_SS_SIG  0x2  /* check the signature of a self-signed
+                                        trust anchor */
+
+/* Replaces the verification flags of the store. */
+MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags );
 
 /* -- Verification -------------------------------------------------- */
 

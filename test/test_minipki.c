@@ -547,6 +547,19 @@ static int test_hardening( void )
     CHECK( mp_chain_close( chain ), "mp_chain_close" );
     CHECK( mp_store_close( store ), "mp_store_close" );
 
+    /* A root that is not self-signed is a trust anchor only on request */
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    d = fx( "inter.der", &n );
+    CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root(intermediate)" );
+    free( d );
+    EXPECT( mp_verify( store, leaf, &chain ), MP_ERR_NO_CHAIN,
+            "mp_verify(intermediate root)" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_PARTIAL_CHAIN ),
+           "mp_store_set_flags(partial chain)" );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(partial chain)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+
     /* OCSP status is found with the response's own CertID hash (SHA-256) */
     d = fx( "ocsp256.der", &n );
     CHECK( mp_ocsp_response_parse( ctx, leaf, inter, d, n, &resp ), "mp_ocsp_response_parse" );
@@ -743,6 +756,34 @@ static int test_key( void )
     free( ca_der );
     free( crl_der );
 
+    /* A CMS SignedData made by the openssl CLI */
+    MP_CMS cms = NULL;
+    const uint8_t * content, * signer;
+    size_t content_len, signer_len, cms_len;
+    uint8_t * cms_der = read_file( GOST_DIR "/intent.cms", &cms_len );
+    ca_der = read_file( GOST_DIR "/ca.der", &ca_len );
+    if( !cms_der || !ca_der )
+    {
+        fprintf( stderr, "FAIL: could not read the CMS fixture\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    CHECK( mp_cms_verify( ctx, cms_der, cms_len, &cms ), "mp_cms_verify" );
+    CHECK( mp_cms_content( cms, &content, &content_len ), "mp_cms_content" );
+    CHECK( mp_cms_signer( cms, &signer, &signer_len ), "mp_cms_signer" );
+    EXPECT( content_len == 13 && !memcmp( content, "tuc revoke 01", 13 ), 1,
+            "CMS content" );
+    EXPECT( signer_len == ca_len && !memcmp( signer, ca_der, ca_len ), 1,
+            "CMS signer certificate" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    cms_der[ cms_len - 1 ] ^= 1;
+    EXPECT( mp_cms_verify( ctx, cms_der, cms_len, &cms ), MP_ERR_VERIFY,
+            "mp_cms_verify(tampered signature)" );
+    EXPECT( mp_cms_verify( ctx, cms_der, cms_len - 1, &cms ), MP_ERR_PARSE,
+            "mp_cms_verify(truncated)" );
+    free( cms_der );
+    free( ca_der );
+
     EXPECT( mp_key_import( ctx, raw, rawlen - 1, &back ), MP_ERR_INVALID_ARG,
             "mp_key_import(short)" );
     memset( bad, 0, sizeof( bad ) );
@@ -769,6 +810,7 @@ static int test_error_handling( void )
     EXPECT( mp_store_close( NULL ), MP_ERR_INVALID_ARG, "mp_store_close(NULL)" );
     EXPECT( mp_chain_close( NULL ), MP_ERR_INVALID_ARG, "mp_chain_close(NULL)" );
     EXPECT( mp_key_close( NULL ), MP_ERR_INVALID_ARG, "mp_key_close(NULL)" );
+    EXPECT( mp_cms_close( NULL ), MP_ERR_INVALID_ARG, "mp_cms_close(NULL)" );
 
     return 0;
 }

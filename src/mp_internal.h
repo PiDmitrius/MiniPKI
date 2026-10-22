@@ -15,6 +15,7 @@
 #include <openssl/err.h>
 #include <openssl/ocsp.h>
 #include <openssl/pkcs7.h>
+#include <openssl/cms.h>
 #include <openssl/provider.h>
 #include <stdlib.h>
 #include <string.h>
@@ -155,6 +156,16 @@ struct MP_KEY_S
     /* cached SubjectPublicKeyInfo DER, on demand */
     uint8_t       * spki;
     size_t          spkilen;
+};
+
+/* ── CMS ──────────────────────────────────────────────────── */
+
+struct MP_CMS_S
+{
+    uint8_t       * content;
+    size_t          contentlen;
+    uint8_t       * signer;      /* DER */
+    size_t          signerlen;
 };
 
 /* ── Bag (multi-cert container) ──────────────────────────── */

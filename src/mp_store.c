@@ -106,17 +106,21 @@ MP_API int32_t mp_store_add_crl( MP_STORE store,
 MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags )
 {
     const unsigned long all = X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL |
-                              X509_V_FLAG_CHECK_SS_SIGNATURE;
+                              X509_V_FLAG_CHECK_SS_SIGNATURE |
+                              X509_V_FLAG_PARTIAL_CHAIN;
     unsigned long set = 0;
     X509_VERIFY_PARAM * p;
 
-    if( !store || ( flags & ~( MP_VERIFY_CRL_CHECK | MP_VERIFY_CHECK_SS_SIG ) ) )
+    if( !store || ( flags & ~( MP_VERIFY_CRL_CHECK | MP_VERIFY_CHECK_SS_SIG |
+                               MP_VERIFY_PARTIAL_CHAIN ) ) )
         return MP_ERR_INVALID_ARG;
 
     if( flags & MP_VERIFY_CRL_CHECK )
         set |= X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL;
     if( flags & MP_VERIFY_CHECK_SS_SIG )
         set |= X509_V_FLAG_CHECK_SS_SIGNATURE;
+    if( flags & MP_VERIFY_PARTIAL_CHAIN )
+        set |= X509_V_FLAG_PARTIAL_CHAIN;
 
     p = X509_STORE_get0_param( store->store );
     if( !p || !X509_VERIFY_PARAM_clear_flags( p, all ) ||

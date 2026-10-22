@@ -7,7 +7,7 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 2
-#define MP_VERSION_MINOR 0
+#define MP_VERSION_MINOR 1
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -42,6 +42,7 @@ typedef struct MP_BAG_S   * MP_BAG;
 typedef struct MP_OCSP_REQ_S  * MP_OCSP_REQ;
 typedef struct MP_OCSP_RESP_S * MP_OCSP_RESP;
 typedef struct MP_KEY_S   * MP_KEY;
+typedef struct MP_CMS_S   * MP_CMS;
 
 /* Context types */
 #define MP_TYPE_OPENSSL  1
@@ -193,6 +194,7 @@ MP_API int32_t mp_store_add_crl( MP_STORE store,
 #define MP_VERIFY_CRL_CHECK     0x1  /* every certificate needs its CRL */
 #define MP_VERIFY_CHECK_SS_SIG  0x2  /* check the signature of a self-signed
                                         trust anchor */
+#define MP_VERIFY_PARTIAL_CHAIN 0x4  /* a root need not be self-signed */
 
 /* Replaces the verification flags of the store. */
 MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags );
@@ -264,6 +266,21 @@ MP_API int32_t mp_key_spki( MP_KEY key,
 MP_API int32_t mp_key_sign( MP_KEY key,
                             const uint8_t * data, size_t datalen,
                             uint8_t sig[ MP_SIG_LEN ] );
+
+/* -- CMS ----------------------------------------------------------- */
+
+/* Parses a DER CMS SignedData with its content and exactly one signer whose
+ * certificate it carries, and verifies the signature with that certificate;
+ * the certificate itself is not verified. MP_ERR_VERIFY on a bad signature. */
+MP_API int32_t mp_cms_verify( MP_CTX ctx,
+                              const uint8_t * data, size_t datalen,
+                              MP_CMS * cms );
+MP_API int32_t mp_cms_close( MP_CMS cms );
+
+MP_API int32_t mp_cms_content( MP_CMS cms,
+                               const uint8_t ** content, size_t * contentlen );
+MP_API int32_t mp_cms_signer( MP_CMS cms,
+                              const uint8_t ** der, size_t * derlen );
 
 /* -- Chain --------------------------------------------------------- */
 

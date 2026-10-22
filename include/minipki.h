@@ -7,7 +7,7 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 1
-#define MP_VERSION_MINOR 1
+#define MP_VERSION_MINOR 2
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -41,6 +41,7 @@ typedef struct MP_CHAIN_S * MP_CHAIN;
 typedef struct MP_BAG_S   * MP_BAG;
 typedef struct MP_OCSP_REQ_S  * MP_OCSP_REQ;
 typedef struct MP_OCSP_RESP_S * MP_OCSP_RESP;
+typedef struct MP_KEY_S   * MP_KEY;
 
 /* Context types */
 #define MP_TYPE_OPENSSL  1
@@ -229,6 +230,33 @@ MP_API int32_t mp_ocsp_revoked_at( MP_OCSP_RESP resp, int64_t * time );
 MP_API int32_t mp_ocsp_revoke_reason( MP_OCSP_RESP resp, int32_t * reason );
 MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
                              const uint8_t ** der, size_t * derlen );
+
+/* -- Key ----------------------------------------------------------- */
+
+/* GOST R 34.10-2012 256-bit key on the CryptoPro-A parameter set. The raw
+ * form is the 32-byte little-endian private scalar, as in its PKCS#8.
+ * Keys need the GOST engine named by MINIPKI_GOST_ENGINE. */
+#define MP_KEY_RAW_LEN  32
+#define MP_SIG_LEN      64
+
+MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );
+MP_API int32_t mp_key_import( MP_CTX ctx,
+                              const uint8_t * raw, size_t rawlen,
+                              MP_KEY * key );
+MP_API int32_t mp_key_close( MP_KEY key );
+
+MP_API int32_t mp_key_raw( MP_KEY key,
+                           const uint8_t ** raw, size_t * rawlen );
+/* SubjectPublicKeyInfo DER */
+MP_API int32_t mp_key_spki( MP_KEY key,
+                            const uint8_t ** der, size_t * derlen );
+
+/* Signs data with GOST R 34.10-2012 over GOST R 34.11-2012 256-bit hash.
+ * The MP_SIG_LEN bytes written to sig are the signatureValue of X.509
+ * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256. */
+MP_API int32_t mp_key_sign( MP_KEY key,
+                            const uint8_t * data, size_t datalen,
+                            uint8_t sig[ MP_SIG_LEN ] );
 
 /* -- Chain --------------------------------------------------------- */
 

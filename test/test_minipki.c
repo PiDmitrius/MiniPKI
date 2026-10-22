@@ -13,6 +13,7 @@
  *  9:  mp_chain accessors
  *  10: CRL parse + mp_crl_verify (good sig & tampered sig)
  *  11: Error handling (NULL args)
+ *  12: GOST keys: generate, import, sign (with MINIPKI_GOST_ENGINE)
  *
  * Pure C consumer of minipki.h
  */
@@ -553,6 +554,170 @@ static int test_hardening( void )
 }
 #endif
 
+#ifndef _WIN32
+/* Length of the DER element at p, header included. */
+static size_t der_len( const uint8_t * p )
+{
+    size_t n = p[ 1 ], h = 2;
+    if( n & 0x80 )
+    {
+        size_t k = n & 0x7f;
+        for( n = 0; k--; h++ )
+            n = ( n << 8 ) | p[ h ];
+    }
+    return h + n;
+}
+
+/* Replaces the signature of a DER certificate or CRL signed with a 256-bit
+   GOST key by key's signature of its to-be-signed part. */
+static int32_t gost_resign( MP_KEY key, uint8_t * der, size_t len )
+{
+    const uint8_t * tbs = der + 2 + ( der[ 1 ] & 0x80 ? der[ 1 ] & 0x7f : 0 );
+    if( der_len( der ) != len || len < MP_SIG_LEN )
+        return MP_ERR_INVALID_ARG;
+    return mp_key_sign( key, tbs, der_len( tbs ), der + len - MP_SIG_LEN );
+}
+
+#define GOST_DIR "/tmp/test_minipki_gost"
+
+static int write_file( const char * path, const uint8_t * data, size_t len )
+{
+    FILE * f = fopen( path, "wb" );
+    if( !f )
+        return 1;
+    size_t n = fwrite( data, 1, len, f );
+    return fclose( f ) != 0 || n != len;
+}
+
+/* Runs an openssl CLI command in GOST_DIR on the GOST engine. */
+static int gost_cli( const char * cmd )
+{
+    char buf[ 512 ];
+    snprintf( buf, sizeof( buf ),
+              "cd " GOST_DIR " && OPENSSL_CONF=eng.cnf %s >/dev/null 2>&1", cmd );
+    return system( buf );
+}
+
+static int gost_verify_data( const uint8_t * spki, size_t spkilen,
+                             const uint8_t * sig,
+                             const uint8_t * data, size_t datalen )
+{
+    if( write_file( GOST_DIR "/pub.der", spki, spkilen ) ||
+        write_file( GOST_DIR "/sig", sig, MP_SIG_LEN ) ||
+        write_file( GOST_DIR "/data", data, datalen ) )
+        return 1;
+    return gost_cli( "openssl dgst -md_gost12_256 -keyform DER "
+                     "-verify pub.der -signature sig data" );
+}
+
+static int gost_verify_cert( const uint8_t * der, size_t len )
+{
+    if( write_file( GOST_DIR "/check.der", der, len ) ||
+        gost_cli( "openssl x509 -inform DER -in check.der -out check.pem" ) )
+        return 1;
+    return gost_cli( "openssl verify -check_ss_sig -CAfile check.pem check.pem" );
+}
+
+/* Verifies a CRL issued by the certificate last given to gost_verify_cert. */
+static int gost_verify_crl( const uint8_t * der, size_t len )
+{
+    if( write_file( GOST_DIR "/check.crl", der, len ) )
+        return 1;
+    return gost_cli( "openssl crl -inform DER -in check.crl -CAfile check.pem -noout" );
+}
+
+/* Signs with a generated and a re-imported GOST key data, a certificate and
+   a CRL, and verifies them with MiniPKI and the openssl CLI; runs only when
+   MINIPKI_GOST_ENGINE names the GOST engine. */
+static int test_key( void )
+{
+    MP_CTX ctx = NULL;
+    MP_KEY key = NULL, back = NULL;
+    MP_CERT ca = NULL;
+    MP_CRL crl = NULL;
+    const uint8_t * raw, * spki, * spki2;
+    size_t rawlen, spkilen, spki2len, ca_len, crl_len;
+    uint8_t * ca_der, * crl_der;
+    static const uint8_t data[] = "MiniPKI GOST signing";
+    uint8_t sig[ MP_SIG_LEN ], bad[ MP_KEY_RAW_LEN ];
+
+    printf( "\n[8] GOST key\n" );
+    if( !getenv( "MINIPKI_GOST_ENGINE" ) )
+    {
+        printf( "  SKIP: MINIPKI_GOST_ENGINE not set\n" );
+        return 0;
+    }
+
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+    CHECK( mp_key_generate( ctx, &key ), "mp_key_generate" );
+    CHECK( mp_key_raw( key, &raw, &rawlen ), "mp_key_raw" );
+    CHECK( mp_key_spki( key, &spki, &spkilen ), "mp_key_spki" );
+
+    /* The openssl CLI makes a certificate and a CRL with the same key */
+    if( system( "rm -rf " GOST_DIR " && mkdir " GOST_DIR ) ||
+        write_file( GOST_DIR "/raw", raw, rawlen ) ||
+        system( "sh ../test/gen_gost.sh " GOST_DIR " " REDIR_NULL ) ||
+        !( ca_der = read_file( GOST_DIR "/ca.der", &ca_len ) ) ||
+        !( crl_der = read_file( GOST_DIR "/crl.der", &crl_len ) ) )
+    {
+        fprintf( stderr, "FAIL: could not generate GOST fixtures\n" );
+        g_tests_failed++;
+        return 1;
+    }
+
+    CHECK( mp_key_sign( key, data, sizeof( data ), sig ), "mp_key_sign" );
+    EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ), 0,
+            "openssl verifies signature" );
+
+    CHECK( mp_key_import( ctx, raw, rawlen, &back ), "mp_key_import" );
+    CHECK( mp_key_spki( back, &spki2, &spki2len ), "mp_key_spki(imported)" );
+    EXPECT( spki2len == spkilen && !memcmp( spki, spki2, spkilen ), 1,
+            "imported key has the same public key" );
+    CHECK( mp_key_sign( back, data, sizeof( data ), sig ),
+           "mp_key_sign(imported)" );
+    EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ), 0,
+            "openssl verifies imported key signature" );
+    sig[ 0 ] ^= 1;
+    EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ) != 0, 1,
+            "openssl rejects tampered signature" );
+
+    /* The signature is the signatureValue of a certificate and a CRL */
+    CHECK( gost_resign( back, ca_der, ca_len ), "re-sign certificate" );
+    CHECK( gost_resign( back, crl_der, crl_len ), "re-sign CRL" );
+    CHECK( mp_cert_parse( ctx, ca_der, ca_len, &ca ), "mp_cert_parse(GOST)" );
+    CHECK( mp_crl_parse( ctx, crl_der, crl_len, &crl ), "mp_crl_parse(GOST)" );
+    CHECK( mp_crl_verify( crl, ca ), "mp_crl_verify(re-signed)" );
+    EXPECT( gost_verify_cert( ca_der, ca_len ), 0,
+            "openssl verifies re-signed certificate" );
+    EXPECT( gost_verify_crl( crl_der, crl_len ), 0,
+            "openssl verifies re-signed CRL" );
+    CHECK( mp_crl_close( crl ), "mp_crl_close" );
+    crl_der[ crl_len - 1 ] ^= 1;
+    CHECK( mp_crl_parse( ctx, crl_der, crl_len, &crl ), "mp_crl_parse(tampered)" );
+    EXPECT( mp_crl_verify( crl, ca ), MP_ERR_VERIFY, "mp_crl_verify(tampered)" );
+    ca_der[ ca_len - 1 ] ^= 1;
+    EXPECT( gost_verify_cert( ca_der, ca_len ) != 0, 1,
+            "openssl rejects tampered certificate" );
+    CHECK( mp_crl_close( crl ), "mp_crl_close" );
+    CHECK( mp_cert_close( ca ), "mp_cert_close" );
+    free( ca_der );
+    free( crl_der );
+
+    EXPECT( mp_key_import( ctx, raw, rawlen - 1, &back ), MP_ERR_INVALID_ARG,
+            "mp_key_import(short)" );
+    memset( bad, 0, sizeof( bad ) );
+    EXPECT( mp_key_import( ctx, bad, sizeof( bad ), &back ), MP_ERR_OPENSSL,
+            "mp_key_import(zero)" );
+    memset( bad, 0xff, sizeof( bad ) );
+    EXPECT( mp_key_import( ctx, bad, sizeof( bad ), &back ), MP_ERR_OPENSSL,
+            "mp_key_import(not below the group order)" );
+    CHECK( mp_key_close( back ), "mp_key_close(imported)" );
+    CHECK( mp_key_close( key ), "mp_key_close" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    return 0;
+}
+#endif
+
 static int test_error_handling( void )
 {
     printf( "\n[6] Error handling\n" );
@@ -563,6 +728,7 @@ static int test_error_handling( void )
     EXPECT( mp_crl_close( NULL ), MP_ERR_INVALID_ARG, "mp_crl_close(NULL)" );
     EXPECT( mp_store_close( NULL ), MP_ERR_INVALID_ARG, "mp_store_close(NULL)" );
     EXPECT( mp_chain_close( NULL ), MP_ERR_INVALID_ARG, "mp_chain_close(NULL)" );
+    EXPECT( mp_key_close( NULL ), MP_ERR_INVALID_ARG, "mp_key_close(NULL)" );
 
     return 0;
 }
@@ -580,6 +746,7 @@ int main( void )
 #ifndef _WIN32
     rc |= test_crl_verify();
     rc |= test_hardening();
+    rc |= test_key();
 #endif
     rc |= test_error_handling();
 

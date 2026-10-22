@@ -45,7 +45,7 @@ EXEEXT_windows-amd64  := .exe
 EXEEXT_windows-arm64  := .exe
 
 # MiniPKI source files
-MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c
+MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c mp_key.c
 
 # Object files for a target
 MP_OBJS = $(patsubst %.c,out/$(1)/%.o,$(MP_SRCS))

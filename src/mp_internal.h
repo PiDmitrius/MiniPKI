@@ -10,6 +10,7 @@
 #include <openssl/x509v3.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/evp.h>
+#include <openssl/ec.h>
 #include <openssl/engine.h>
 #include <openssl/err.h>
 #include <openssl/ocsp.h>
@@ -143,6 +144,17 @@ struct MP_OCSP_RESP_S
     int32_t          revoke_reason;
     uint8_t        * der;
     size_t           derlen;
+};
+
+/* ── Key ─────────────────────────────────────────────────── */
+
+struct MP_KEY_S
+{
+    EVP_PKEY      * pkey;
+    uint8_t         raw[ MP_KEY_RAW_LEN ];
+    /* cached SubjectPublicKeyInfo DER, on demand */
+    uint8_t       * spki;
+    size_t          spkilen;
 };
 
 /* ── Bag (multi-cert container) ──────────────────────────── */

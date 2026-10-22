@@ -4,21 +4,27 @@
 
 MP_API int32_t mp_cms_verify( MP_CTX ctx,
                               const uint8_t * data, size_t datalen,
+                              const uint8_t * signer, size_t signerlen,
                               MP_CMS * cms )
 {
     const uint8_t * p = data;
-    CMS_ContentInfo * ci;
-    STACK_OF(X509) * signers = NULL;
+    CMS_ContentInfo * ci = NULL;
+    STACK_OF(X509) * signers = NULL, * given = NULL;
+    X509 * sx = NULL;
     BIO * out = NULL;
     struct MP_CMS_S * c = NULL;
     BUF_MEM * mem = NULL;
     int32_t rc = MP_ERR_PARSE;
     int len;
 
-    if( !ctx || !data || !datalen || datalen > INT_MAX || !cms )
+    if( !ctx || !data || !datalen || datalen > INT_MAX ||
+        ( signer && ( !signerlen || signerlen > INT_MAX ) ) || !cms )
         return MP_ERR_INVALID_ARG;
 
     ERR_set_mark();
+    if( signer && ( !( sx = mp_d2i_x509( signer, signerlen ) ) ||
+                    !( given = sk_X509_new_null() ) || !sk_X509_push( given, sx ) ) )
+        goto end;
     ci = d2i_CMS_ContentInfo( NULL, &p, (long)datalen );
     if( !ci || p != data + datalen ||
         OBJ_obj2nid( CMS_get0_type( ci ) ) != NID_pkcs7_signed ||
@@ -30,8 +36,9 @@ MP_API int32_t mp_cms_verify( MP_CTX ctx,
     out = BIO_new( BIO_s_mem() );
     if( !out )
         goto end;
-    if( CMS_verify( ci, NULL, NULL, NULL, out,
-                    CMS_NO_SIGNER_CERT_VERIFY | CMS_BINARY ) != 1 )
+    if( CMS_verify( ci, given, NULL, NULL, out,
+                    CMS_NO_SIGNER_CERT_VERIFY | CMS_BINARY |
+                    ( given ? CMS_NOINTERN : 0 ) ) != 1 )
     {
         rc = MP_ERR_VERIFY;
         goto end;
@@ -68,6 +75,9 @@ end:
     if( c )
         mp_cms_close( c );
     sk_X509_free( signers );
+    if( given )
+        sk_X509_free( given );
+    X509_free( sx );
     BIO_free( out );
     CMS_ContentInfo_free( ci );
     ERR_pop_to_mark();

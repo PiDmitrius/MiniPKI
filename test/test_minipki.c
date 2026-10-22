@@ -768,7 +768,7 @@ static int test_key( void )
         g_tests_failed++;
         return 1;
     }
-    CHECK( mp_cms_verify( ctx, cms_der, cms_len, &cms ), "mp_cms_verify" );
+    CHECK( mp_cms_verify( ctx, cms_der, cms_len, NULL, 0, &cms ), "mp_cms_verify" );
     CHECK( mp_cms_content( cms, &content, &content_len ), "mp_cms_content" );
     CHECK( mp_cms_signer( cms, &signer, &signer_len ), "mp_cms_signer" );
     EXPECT( content_len == 13 && !memcmp( content, "tuc revoke 01", 13 ), 1,
@@ -777,9 +777,9 @@ static int test_key( void )
             "CMS signer certificate" );
     CHECK( mp_cms_close( cms ), "mp_cms_close" );
     cms_der[ cms_len - 1 ] ^= 1;
-    EXPECT( mp_cms_verify( ctx, cms_der, cms_len, &cms ), MP_ERR_VERIFY,
+    EXPECT( mp_cms_verify( ctx, cms_der, cms_len, NULL, 0, &cms ), MP_ERR_VERIFY,
             "mp_cms_verify(tampered signature)" );
-    EXPECT( mp_cms_verify( ctx, cms_der, cms_len - 1, &cms ), MP_ERR_PARSE,
+    EXPECT( mp_cms_verify( ctx, cms_der, cms_len - 1, NULL, 0, &cms ), MP_ERR_PARSE,
             "mp_cms_verify(truncated)" );
     free( cms_der );
 
@@ -793,7 +793,7 @@ static int test_key( void )
            "mp_cms_sign" );
     CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
     MP_CMS back_cms = NULL;
-    CHECK( mp_cms_verify( ctx, signed_der, signed_len, &back_cms ), "mp_cms_verify(mp_cms_sign)" );
+    CHECK( mp_cms_verify( ctx, signed_der, signed_len, NULL, 0, &back_cms ), "mp_cms_verify(mp_cms_sign)" );
     CHECK( mp_cms_content( back_cms, &content, &content_len ), "mp_cms_content" );
     EXPECT( content_len == 5 && !memcmp( content, "hello", 5 ), 1, "signed content" );
     CHECK( mp_cms_close( back_cms ), "mp_cms_close" );
@@ -807,8 +807,21 @@ static int test_key( void )
     CHECK( mp_cms_sign( key, ca_der, ca_len, NULL, NULL, 0, NULL, NULL, 0, &cms ),
            "mp_cms_sign(no certificates)" );
     CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
-    EXPECT( mp_cms_verify( ctx, signed_der, signed_len, &back_cms ) != MP_OK, 1,
+    EXPECT( mp_cms_verify( ctx, signed_der, signed_len, NULL, 0, &back_cms ) != MP_OK, 1,
             "no certificates in a CMS signed without them" );
+    CHECK( mp_cms_verify( ctx, signed_der, signed_len, ca_der, ca_len, &back_cms ),
+           "mp_cms_verify(given signer)" );
+    CHECK( mp_cms_close( back_cms ), "mp_cms_close" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    CHECK( mp_cms_sign( key, ca_der, ca_len, NULL, NULL, 0, cert_list, cert_lens, 1, &cms ),
+           "mp_cms_sign(with its certificate)" );
+    CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+    size_t other_len;
+    uint8_t * other = read_file( TEST_CERT_PATH, &other_len );
+    EXPECT( other && mp_cms_verify( ctx, signed_der, signed_len, other, other_len,
+                                    &back_cms ) == MP_ERR_VERIFY, 1,
+            "mp_cms_verify(another given signer)" );
+    free( other );
     CHECK( mp_cms_close( cms ), "mp_cms_close" );
     free( ca_der );
 

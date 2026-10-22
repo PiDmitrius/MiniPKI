@@ -269,11 +269,13 @@ MP_API int32_t mp_key_sign( MP_KEY key,
 
 /* -- CMS ----------------------------------------------------------- */
 
-/* Parses a DER CMS SignedData with its content and exactly one signer whose
- * certificate it carries, and verifies the signature with that certificate;
- * the certificate itself is not verified. MP_ERR_VERIFY on a bad signature. */
+/* Parses a DER CMS SignedData with its content and exactly one signer, and
+ * verifies the signature with the signer certificate: the one given, or
+ * else the one the SignedData carries; the certificate itself is not
+ * verified. MP_ERR_VERIFY on a bad signature. */
 MP_API int32_t mp_cms_verify( MP_CTX ctx,
                               const uint8_t * data, size_t datalen,
+                              const uint8_t * signer, size_t signerlen,
                               MP_CMS * cms );
 /* Signs content of the given content type (a dotted OID, NULL for id-data)
  * with key, whose certificate is signer, into a DER CMS SignedData holding

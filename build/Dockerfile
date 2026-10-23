@@ -1,7 +1,7 @@
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-ARG ZIG_VERSION=0.15.2
-ARG OPENSSL_VERSION=3.5.5
+ARG ZIG_VERSION=0.17.0
+ARG OPENSSL_VERSION=3.5.9
 ARG GOST_ENGINE_REF=af2b7e6
 
 # Base tools

@@ -6,8 +6,8 @@
 #include <stddef.h>
 
 /* Version */
-#define MP_VERSION_MAJOR 2
-#define MP_VERSION_MINOR 2
+#define MP_VERSION_MAJOR 3
+#define MP_VERSION_MINOR 0
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -242,30 +242,37 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
 
 /* -- Key ----------------------------------------------------------- */
 
-/* GOST R 34.10-2012 256-bit key on the CryptoPro-A parameter set. The raw
- * form is the 32-byte little-endian private scalar, as in its PKCS#8.
- * Keys need the GOST engine named by MINIPKI_GOST_ENGINE. */
+/* A signing key: a GOST R 34.10-2012 256-bit key on the CryptoPro-A
+ * parameter set, generated or imported from its raw form, the 32-byte
+ * little-endian private scalar as in its PKCS#8 (these need the GOST engine
+ * named by MINIPKI_GOST_ENGINE); or any key OpenSSL reads from PKCS#8, such
+ * as RSA or ECDSA. */
 #define MP_KEY_RAW_LEN  32
-#define MP_SIG_LEN      64
 
 MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );
 MP_API int32_t mp_key_import( MP_CTX ctx,
                               const uint8_t * raw, size_t rawlen,
                               MP_KEY * key );
+MP_API int32_t mp_key_import_pkcs8( MP_CTX ctx,
+                                    const uint8_t * der, size_t derlen,
+                                    MP_KEY * key );
 MP_API int32_t mp_key_close( MP_KEY key );
 
+/* The raw form of a GOST key; MP_ERR_INVALID_ARG for other keys. */
 MP_API int32_t mp_key_raw( MP_KEY key,
                            const uint8_t ** raw, size_t * rawlen );
 /* SubjectPublicKeyInfo DER */
 MP_API int32_t mp_key_spki( MP_KEY key,
                             const uint8_t ** der, size_t * derlen );
 
-/* Signs data with GOST R 34.10-2012 over GOST R 34.11-2012 256-bit hash.
- * The MP_SIG_LEN bytes written to sig are the signatureValue of X.509
- * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256. */
+/* Signs data over the GOST R 34.11-2012 256-bit hash for a GOST key and
+ * SHA-256 for others. The signature is the signatureValue of X.509
+ * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256,
+ * sha256WithRSAEncryption or ecdsa-with-SHA256, valid until the next
+ * mp_key_sign on the key. */
 MP_API int32_t mp_key_sign( MP_KEY key,
                             const uint8_t * data, size_t datalen,
-                            uint8_t sig[ MP_SIG_LEN ] );
+                            const uint8_t ** sig, size_t * siglen );
 
 /* -- CMS ----------------------------------------------------------- */
 

@@ -152,7 +152,11 @@ struct MP_OCSP_RESP_S
 struct MP_KEY_S
 {
     EVP_PKEY      * pkey;
+    int             gost;         /* has raw */
     uint8_t         raw[ MP_KEY_RAW_LEN ];
+    /* the last signature */
+    uint8_t       * sig;
+    size_t          siglen;
     /* cached SubjectPublicKeyInfo DER, on demand */
     uint8_t       * spki;
     size_t          spkilen;

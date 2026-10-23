@@ -607,12 +607,21 @@ static size_t der_len( const uint8_t * p )
 
 /* Replaces the signature of a DER certificate or CRL signed with a 256-bit
    GOST key by key's signature of its to-be-signed part. */
+#define GOST_SIG_LEN 64
+
 static int32_t gost_resign( MP_KEY key, uint8_t * der, size_t len )
 {
-    const uint8_t * tbs = der + 2 + ( der[ 1 ] & 0x80 ? der[ 1 ] & 0x7f : 0 );
-    if( der_len( der ) != len || len < MP_SIG_LEN )
+    const uint8_t * tbs = der + 2 + ( der[ 1 ] & 0x80 ? der[ 1 ] & 0x7f : 0 ), * sig;
+    size_t siglen;
+    int32_t rc;
+    if( der_len( der ) != len || len < GOST_SIG_LEN )
         return MP_ERR_INVALID_ARG;
-    return mp_key_sign( key, tbs, der_len( tbs ), der + len - MP_SIG_LEN );
+    if( ( rc = mp_key_sign( key, tbs, der_len( tbs ), &sig, &siglen ) ) != MP_OK )
+        return rc;
+    if( siglen != GOST_SIG_LEN )
+        return MP_ERR_UNEXPECTED;
+    memcpy( der + len - GOST_SIG_LEN, sig, GOST_SIG_LEN );
+    return MP_OK;
 }
 
 #define GOST_DIR "/tmp/test_minipki_gost"
@@ -640,7 +649,7 @@ static int gost_verify_data( const uint8_t * spki, size_t spkilen,
                              const uint8_t * data, size_t datalen )
 {
     if( write_file( GOST_DIR "/pub.der", spki, spkilen ) ||
-        write_file( GOST_DIR "/sig", sig, MP_SIG_LEN ) ||
+        write_file( GOST_DIR "/sig", sig, GOST_SIG_LEN ) ||
         write_file( GOST_DIR "/data", data, datalen ) )
         return 1;
     return gost_cli( "openssl dgst -md_gost12_256 -keyform DER "
@@ -678,7 +687,9 @@ static int test_key( void )
     size_t rawlen, spkilen, spki2len, ca_len, crl_len;
     uint8_t * ca_der, * crl_der;
     static const uint8_t data[] = "MiniPKI GOST signing";
-    uint8_t sig[ MP_SIG_LEN ], bad[ MP_KEY_RAW_LEN ];
+    const uint8_t * signed_by;
+    size_t siglen;
+    uint8_t sig[ GOST_SIG_LEN ], bad[ MP_KEY_RAW_LEN ];
 
     printf( "\n[8] GOST key\n" );
     if( !getenv( "MINIPKI_GOST_ENGINE" ) )
@@ -704,7 +715,9 @@ static int test_key( void )
         return 1;
     }
 
-    CHECK( mp_key_sign( key, data, sizeof( data ), sig ), "mp_key_sign" );
+    CHECK( mp_key_sign( key, data, sizeof( data ), &signed_by, &siglen ), "mp_key_sign" );
+    EXPECT( siglen, GOST_SIG_LEN, "GOST signature length" );
+    memcpy( sig, signed_by, GOST_SIG_LEN );
     EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ), 0,
             "openssl verifies signature" );
 
@@ -712,8 +725,9 @@ static int test_key( void )
     CHECK( mp_key_spki( back, &spki2, &spki2len ), "mp_key_spki(imported)" );
     EXPECT( spki2len == spkilen && !memcmp( spki, spki2, spkilen ), 1,
             "imported key has the same public key" );
-    CHECK( mp_key_sign( back, data, sizeof( data ), sig ),
+    CHECK( mp_key_sign( back, data, sizeof( data ), &signed_by, &siglen ),
            "mp_key_sign(imported)" );
+    memcpy( sig, signed_by, GOST_SIG_LEN );
     EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ), 0,
             "openssl verifies imported key signature" );
     sig[ 0 ] ^= 1;
@@ -840,6 +854,65 @@ static int test_key( void )
 }
 #endif
 
+#ifndef _WIN32
+/* RSA and ECDSA keys from PKCS#8 sign data and CMS that the openssl CLI
+   verifies with SHA-256. */
+static int test_pkcs8_keys( void )
+{
+    MP_CTX ctx = NULL;
+    MP_KEY key = NULL;
+    MP_CMS cms = NULL;
+    const char * algs[] = { "RSA -pkeyopt rsa_keygen_bits:2048", "EC -pkeyopt ec_paramgen_curve:P-256" };
+    static const uint8_t data[] = "MiniPKI PKCS#8 signing";
+    const uint8_t * spki, * sig, * der;
+    size_t spkilen, siglen, derlen, n;
+    char cmd[ 512 ];
+
+    printf( "\n[9] PKCS#8 keys\n" );
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+    for( size_t i = 0; i < 2; i++ )
+    {
+        snprintf( cmd, sizeof( cmd ), "rm -rf " GOST_DIR " && mkdir " GOST_DIR " && cd " GOST_DIR " && "
+                  "openssl genpkey -algorithm %s -out key.pem && openssl pkcs8 -topk8 -nocrypt -in key.pem -outform DER -out key.der && "
+                  "openssl req -new -x509 -key key.der -keyform DER -subj /CN=k -days 1 -out cert.pem %s", algs[ i ], REDIR_NULL );
+        uint8_t * p8;
+        if( system( cmd ) || !( p8 = read_file( GOST_DIR "/key.der", &n ) ) )
+        {
+            fprintf( stderr, "FAIL: could not make a key\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( mp_key_import_pkcs8( ctx, p8, n, &key ), "mp_key_import_pkcs8" );
+        free( p8 );
+        EXPECT( mp_key_raw( key, &der, &derlen ), MP_ERR_INVALID_ARG, "no raw form" );
+        CHECK( mp_key_spki( key, &spki, &spkilen ), "mp_key_spki" );
+        CHECK( mp_key_sign( key, data, sizeof( data ), &sig, &siglen ), "mp_key_sign" );
+        EXPECT( write_file( GOST_DIR "/pub.der", spki, spkilen ) || write_file( GOST_DIR "/sig", sig, siglen ) ||
+                write_file( GOST_DIR "/data", data, sizeof( data ) ) ||
+                system( "cd " GOST_DIR " && openssl dgst -sha256 -keyform DER -verify pub.der -signature sig data >/dev/null 2>&1" ), 0,
+                "openssl verifies the SHA-256 signature" );
+        uint8_t * cert = read_file( GOST_DIR "/cert.pem", &n );
+        MP_BAG bag = NULL;
+        const uint8_t * cder;
+        size_t cderlen;
+        CHECK( mp_bag_parse( ctx, cert, n, &bag ), "mp_bag_parse" );
+        CHECK( mp_bag_cert_der( bag, 0, &cder, &cderlen ), "mp_bag_cert_der" );
+        CHECK( mp_cms_sign( key, cder, cderlen, NULL, data, sizeof( data ), &cder, &cderlen, 1, &cms ), "mp_cms_sign" );
+        CHECK( mp_cms_der( cms, &der, &derlen ), "mp_cms_der" );
+        EXPECT( write_file( GOST_DIR "/s.cms", der, derlen ) ||
+                system( "cd " GOST_DIR " && openssl cms -verify -noverify -binary -inform DER -in s.cms >/dev/null 2>&1" ), 0,
+                "openssl verifies the CMS" );
+        CHECK( mp_cms_close( cms ), "mp_cms_close" );
+        CHECK( mp_bag_close( bag ), "mp_bag_close" );
+        free( cert );
+        CHECK( mp_key_close( key ), "mp_key_close" );
+    }
+    EXPECT( mp_key_import_pkcs8( ctx, data, sizeof( data ), &key ), MP_ERR_PARSE, "mp_key_import_pkcs8(garbage)" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    return 0;
+}
+#endif
+
 static int test_error_handling( void )
 {
     printf( "\n[6] Error handling\n" );
@@ -870,6 +943,7 @@ int main( void )
     rc |= test_crl_verify();
     rc |= test_hardening();
     rc |= test_key();
+    rc |= test_pkcs8_keys();
 #endif
     rc |= test_error_handling();
 

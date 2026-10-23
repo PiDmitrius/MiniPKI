@@ -65,7 +65,8 @@ MP_API int32_t mp_cms_verify( MP_CTX ctx,
         rc = MP_ERR_UNEXPECTED;
         goto end;
     }
-    memcpy( c->content, mem->data, mem->length );
+    if( mem->length )
+        memcpy( c->content, mem->data, mem->length );
 
     *cms = c;
     c = NULL;

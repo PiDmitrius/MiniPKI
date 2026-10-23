@@ -13,7 +13,6 @@ MP_API int32_t mp_store_new( MP_CTX ctx, MP_STORE * store )
     if( !s )
         return MP_ERR_UNEXPECTED;
 
-    s->ctx = ctx;
     s->store = X509_STORE_new();
     s->untrusted = sk_X509_new_null();
     if( !s->store || !s->untrusted )

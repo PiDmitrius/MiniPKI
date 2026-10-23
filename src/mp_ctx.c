@@ -14,7 +14,6 @@ MP_API uint32_t mp_version( void )
 /* The GOST engine named by MINIPKI_GOST_ENGINE is loaded once per process,
    becomes the default for all methods and is never unloaded. */
 static CRYPTO_ONCE gost_once = CRYPTO_ONCE_STATIC_INIT;
-static ENGINE * gost_engine;
 static int gost_failed;
 
 static void load_gost( void )
@@ -32,7 +31,6 @@ static void load_gost( void )
         ENGINE_init( dyn ) )
     {
         ENGINE_set_default( dyn, ENGINE_METHOD_ALL );
-        gost_engine = dyn;
         return;
     }
     ENGINE_free( dyn );
@@ -60,9 +58,6 @@ MP_API int32_t mp_open( int32_t type, MP_CTX * ctx )
     c = calloc( 1, sizeof( *c ) );
     if( !c )
         return MP_ERR_UNEXPECTED;
-
-    c->type = type;
-    c->eng_gost = gost_engine;
 
     /* Load default provider into global context */
     c->prov_default = OSSL_PROVIDER_load( NULL, "default" );

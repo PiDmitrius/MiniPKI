@@ -192,7 +192,6 @@ MP_API int32_t mp_key_sign( MP_KEY key,
     }
     OPENSSL_free( key->sig );
     key->sig = buf;
-    key->siglen = len;
     *sig = buf;
     *siglen = len;
     return MP_OK;

@@ -29,9 +29,7 @@
 
 struct MP_CTX_S
 {
-    int32_t         type;
     OSSL_PROVIDER * prov_default;
-    ENGINE        * eng_gost;     /* process-wide, not owned */
 };
 
 /* ── Certificate ──────────────────────────────────────────── */
@@ -73,14 +71,12 @@ struct MP_CERT_S
     char         ** san_entries;
     size_t          san_count;
     int             san_cached;
-    /* cached AIA caIssuers URLs */
+    /* cached AIA caIssuers and OCSP URLs, parsed together */
+    int             aia_cached;
     char         ** aia_urls;
     size_t          aia_count;
-    int             aia_cached;
-    /* cached AIA OCSP URLs */
     char         ** ocsp_urls;
     size_t          ocsp_count;
-    int             ocsp_cached;
     /* cached CDP URLs */
     char         ** cdp_urls;
     size_t          cdp_count;
@@ -105,7 +101,6 @@ struct MP_CRL_S
 
 struct MP_STORE_S
 {
-    MP_CTX            ctx;
     X509_STORE      * store;       /* trust anchors and CRLs */
     STACK_OF(X509)  * untrusted;   /* intermediates for chain building */
     int             last_err_code;
@@ -135,7 +130,6 @@ struct MP_OCSP_REQ_S
 struct MP_OCSP_RESP_S
 {
     OCSP_RESPONSE  * resp;
-    OCSP_BASICRESP * basic;
     int32_t          status;          /* MP_OCSP_GOOD/REVOKED/UNKNOWN */
     int32_t          verified;
     int64_t          this_update;
@@ -156,7 +150,6 @@ struct MP_KEY_S
     uint8_t         raw[ MP_KEY_RAW_LEN ];
     /* the last signature */
     uint8_t       * sig;
-    size_t          siglen;
     /* cached SubjectPublicKeyInfo DER, on demand */
     uint8_t       * spki;
     size_t          spkilen;

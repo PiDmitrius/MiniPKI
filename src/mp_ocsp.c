@@ -149,7 +149,6 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
         return MP_ERR_UNEXPECTED;
     }
     r->resp = resp;
-    r->basic = basic;
     r->revoke_reason = -1;
 
     /* Verify signature: build temporary trust store with issuer.
@@ -213,6 +212,7 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
     else
     {
         /* the response says nothing about this certificate */
+        OCSP_BASICRESP_free( basic );
         mp_ocsp_response_close( r );
         return MP_ERR_PARSE;
     }
@@ -227,6 +227,7 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
                 r->produced_at = (int64_t)timegm( &tm );
         }
     }
+    OCSP_BASICRESP_free( basic );
 
     *out = r;
     return MP_OK;
@@ -236,8 +237,6 @@ MP_API int32_t mp_ocsp_response_close( MP_OCSP_RESP resp )
 {
     if( !resp )
         return MP_ERR_INVALID_ARG;
-    if( resp->basic )
-        OCSP_BASICRESP_free( resp->basic );
     if( resp->resp )
         OCSP_RESPONSE_free( resp->resp );
     OPENSSL_free( resp->der );

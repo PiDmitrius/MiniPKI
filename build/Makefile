@@ -2,12 +2,11 @@
 
 ROOT := ..
 
-CFLAGS := -Wall -O2 -fPIC -Werror -Wno-unused-function -fvisibility=hidden -std=c11
+CFLAGS := -Wall -O2 -fPIC -Werror -fvisibility=hidden -std=c11
 
 , := ,
 
 OPENSSL_BASE := /opt/openssl
-GOST_ENGINE_SRC := /tmp/gost-engine-src
 
 # 6 targets
 TARGETS := linux-amd64 linux-arm64 macos-amd64 macos-arm64 windows-amd64 windows-arm64

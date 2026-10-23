@@ -173,9 +173,6 @@ MP_API int32_t mp_cms_sign( MP_KEY key,
                    CMS_PARTIAL | CMS_BINARY | CMS_NOCERTS );
     if( !ci )
         goto end;
-    for( i = 0; i < ncerts; i++ )
-        if( !CMS_add1_cert( ci, sk_X509_value( stack, (int)i ) ) )
-            goto end;
     if( ( type && !CMS_set1_eContentType( ci, type ) ) ||
         !CMS_final( ci, in, NULL, CMS_BINARY ) )
         goto end;

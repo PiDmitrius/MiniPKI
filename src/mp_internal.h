@@ -10,10 +10,12 @@
 #include <openssl/x509v3.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/evp.h>
+#include <openssl/ec.h>
 #include <openssl/engine.h>
 #include <openssl/err.h>
 #include <openssl/ocsp.h>
 #include <openssl/pkcs7.h>
+#include <openssl/cms.h>
 #include <openssl/provider.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +29,7 @@
 
 struct MP_CTX_S
 {
-    int32_t         type;
     OSSL_PROVIDER * prov_default;
-    ENGINE        * eng_gost;     /* process-wide, not owned */
 };
 
 /* ── Certificate ──────────────────────────────────────────── */
@@ -71,14 +71,12 @@ struct MP_CERT_S
     char         ** san_entries;
     size_t          san_count;
     int             san_cached;
-    /* cached AIA caIssuers URLs */
+    /* cached AIA caIssuers and OCSP URLs, parsed together */
+    int             aia_cached;
     char         ** aia_urls;
     size_t          aia_count;
-    int             aia_cached;
-    /* cached AIA OCSP URLs */
     char         ** ocsp_urls;
     size_t          ocsp_count;
-    int             ocsp_cached;
     /* cached CDP URLs */
     char         ** cdp_urls;
     size_t          cdp_count;
@@ -103,7 +101,6 @@ struct MP_CRL_S
 
 struct MP_STORE_S
 {
-    MP_CTX            ctx;
     X509_STORE      * store;       /* trust anchors and CRLs */
     STACK_OF(X509)  * untrusted;   /* intermediates for chain building */
     int             last_err_code;
@@ -133,7 +130,6 @@ struct MP_OCSP_REQ_S
 struct MP_OCSP_RESP_S
 {
     OCSP_RESPONSE  * resp;
-    OCSP_BASICRESP * basic;
     int32_t          status;          /* MP_OCSP_GOOD/REVOKED/UNKNOWN */
     int32_t          verified;
     int64_t          this_update;
@@ -143,6 +139,32 @@ struct MP_OCSP_RESP_S
     int32_t          revoke_reason;
     uint8_t        * der;
     size_t           derlen;
+};
+
+/* ── Key ─────────────────────────────────────────────────── */
+
+struct MP_KEY_S
+{
+    EVP_PKEY      * pkey;
+    int             gost;         /* has raw */
+    uint8_t         raw[ MP_KEY_RAW_LEN ];
+    /* the last signature */
+    uint8_t       * sig;
+    /* cached SubjectPublicKeyInfo DER, on demand */
+    uint8_t       * spki;
+    size_t          spkilen;
+};
+
+/* ── CMS ──────────────────────────────────────────────────── */
+
+struct MP_CMS_S
+{
+    uint8_t       * content;
+    size_t          contentlen;
+    uint8_t       * signer;      /* DER */
+    size_t          signerlen;
+    uint8_t       * der;         /* the SignedData, made by mp_cms_sign */
+    size_t          derlen;
 };
 
 /* ── Bag (multi-cert container) ──────────────────────────── */

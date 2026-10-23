@@ -203,10 +203,6 @@ static X509 * try_base64_x509( const uint8_t * data, size_t datalen )
            ( c >= '0' && c <= '9' ) || c == '+' || c == '/' ) )
         return NULL;
 
-    /* Reject if it looks like PEM (already tried above) */
-    if( datalen > 10 && memcmp( data + i, "-----", 5 ) == 0 )
-        return NULL;
-
     BIO * b64 = BIO_new( BIO_f_base64() );
     if( !b64 )
         return NULL;
@@ -313,8 +309,6 @@ MP_API int32_t mp_cert_parse( MP_CTX ctx,
 {
     struct MP_CERT_S * c;
     X509 * x;
-    uint8_t * der = NULL;
-    int derlen;
 
     if( !ctx || !data || !datalen || datalen > INT_MAX || !cert )
         return MP_ERR_INVALID_ARG;
@@ -333,15 +327,6 @@ MP_API int32_t mp_cert_parse( MP_CTX ctx,
     }
 
     c->x509 = x;
-
-    /* Cache DER */
-    derlen = i2d_X509( x, &der );
-    if( derlen > 0 )
-    {
-        c->der = der;
-        c->derlen = (size_t)derlen;
-    }
-
     *cert = c;
     return MP_OK;
 }
@@ -909,10 +894,9 @@ MP_API int32_t mp_cert_san_entry( MP_CERT cert, size_t index,
 static void mp_cert_cache_aia_all( MP_CERT cert )
 {
     AUTHORITY_INFO_ACCESS * aia;
-    if( cert->aia_cached && cert->ocsp_cached )
+    if( cert->aia_cached )
         return;
     cert->aia_cached = 1;
-    cert->ocsp_cached = 1;
 
     aia = X509_get_ext_d2i( cert->x509, NID_info_access, NULL, NULL );
     if( !aia )

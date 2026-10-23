@@ -88,60 +88,25 @@ EOF
     chmod +x "$dir"/*
 }
 
-# gost-engine source files (provider mode)
-GOST_CORE_SRCS="
-    gost89.c
-    gosthash.c
-    gosthash2012.c
-    gost_ameth.c
-    gost_pmeth.c
-    gost_ctl.c
-    gost_asn1.c
-    gost_crypt.c
-    gost_keywrap.c
-    gost_md.c
-    gost_md2012.c
-    gost_omac.c
-    gost_omac_acpkm.c
-    gost_gost2015.c
-    gost_params.c
-    gost_keyexpimp.c
-    gost_digest.c
-    gost_digest_ctx.c
-    gost_grasshopper_core.c
-    gost_grasshopper_defines.c
-    gost_grasshopper_galois_precompiled.c
-    gost_grasshopper_precompiled.c
-    gost_grasshopper_cipher.c
-    gost_ec_keyx.c
-    gost_ec_sign.c
-    ecp_id_GostR3410_2001_CryptoPro_A_ParamSet.c
-    ecp_id_GostR3410_2001_CryptoPro_B_ParamSet.c
-    ecp_id_GostR3410_2001_CryptoPro_C_ParamSet.c
-    ecp_id_GostR3410_2001_TestParamSet.c
-    ecp_id_tc26_gost_3410_2012_256_paramSetA.c
-    ecp_id_tc26_gost_3410_2012_512_paramSetA.c
-    ecp_id_tc26_gost_3410_2012_512_paramSetB.c
-    ecp_id_tc26_gost_3410_2012_512_paramSetC.c
-    gost_tls12_additional_kdftree.c
-    gost_tls12_additional_kexpimp.c
-    gost_tls12_additional_tlstree.c
-    gost_eng.c
-    gost_eng_digest.c
-    gost_eng_digest_define.c
-"
-
-GOST_PROV_SRCS="
-    gost_prov.c
-    gost_prov_cipher.c
-    gost_prov_digest.c
-    gost_prov_mac.c
-    gost_prov_keymgmt.c
-    gost_prov_encoder.c
-    gost_prov_signature.c
-    gost_prov_decoder.c
-    gost_prov_keyexch.c
-    gost_prov_tls.c
+# gost-engine as a static engine library (its gost_engine_static target):
+# the engine with its core, hashes, ciphers, curves and errors, entered by
+# ENGINE_load_gost()
+GOST_STATIC_SRCS="
+    gost_eng.c gost_eng_ameth.c gost_eng_digest.c gost_eng_digest_define.c
+    gost_eng_cipher.c gost_eng_cmd.c gost_cipher_ctx_evp.c gost_eng_pmeth.c
+    gost89.c gosthash.c gosthash2012.c
+    gost_tls12_additional_kdftree.c gost_tls12_additional_kexpimp.c gost_tls12_additional_tlstree.c
+    gost_ameth.c gost_pmeth.c gost_ctl.c gost_asn1.c gost_crypt.c gost_keywrap.c
+    gost_md.c gost_md2012.c gost_omac.c gost_omac_acpkm.c gost_gost2015.c
+    gost_params.c gost_keyexpimp.c gost_digest.c gost_digest_ctx.c gost_cipher.c
+    gost_grasshopper_core.c gost_grasshopper_defines.c gost_grasshopper_galois_precompiled.c
+    gost_grasshopper_precompiled.c gost_grasshopper_cipher.c
+    gost_ec_keyx.c gost_ec_sign.c
+    ecp_id_GostR3410_2001_CryptoPro_A_ParamSet.c ecp_id_GostR3410_2001_CryptoPro_B_ParamSet.c
+    ecp_id_GostR3410_2001_CryptoPro_C_ParamSet.c ecp_id_GostR3410_2001_TestParamSet.c
+    ecp_id_tc26_gost_3410_2012_256_paramSetA.c ecp_id_tc26_gost_3410_2012_512_paramSetA.c
+    ecp_id_tc26_gost_3410_2012_512_paramSetB.c ecp_id_tc26_gost_3410_2012_512_paramSetC.c
+    e_gost_err.c
 "
 
 build_gost_static() {
@@ -158,21 +123,13 @@ build_gost_static() {
 
     echo "--- Building gost-engine for $short_name ---"
 
-    local cflags="-Wall -O2 -fPIC -std=gnu99 -DBUILDING_PROVIDER_AS_LIBRARY -DBUILDING_GOST_PROVIDER $gost_defines"
+    local cflags="-Wall -O2 -fPIC -std=gnu99 -DBUILDING_ENGINE_AS_LIBRARY $gost_defines"
     cflags="$cflags -Wno-unused-parameter -Wno-unused-function -Wno-missing-braces"
     cflags="$cflags -Wno-deprecated-declarations"
-    cflags="$cflags -I${GOST_ENGINE_SRC} -I${GOST_ENGINE_SRC}/libprov/include -I${prefix}/include"
+    cflags="$cflags -I${GOST_ENGINE_SRC} -I${prefix}/include"
 
-    # Compile core + provider sources
-    for src in $GOST_CORE_SRCS $GOST_PROV_SRCS; do
+    for src in $GOST_STATIC_SRCS; do
         local obj="${build_dir}/$(basename "$src" .c).o"
-        zig cc -target "$zig_target" $cflags \
-            -c "${GOST_ENGINE_SRC}/${src}" -o "$obj"
-    done
-
-    # Compile libprov sources
-    for src in libprov/err.c libprov/num.c; do
-        local obj="${build_dir}/libprov_$(basename "$src" .c).o"
         zig cc -target "$zig_target" $cflags \
             -c "${GOST_ENGINE_SRC}/${src}" -o "$obj"
     done

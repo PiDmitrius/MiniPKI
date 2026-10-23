@@ -17,6 +17,19 @@ end=$(openssl x509 -in leaf.pem -noout -enddate | cut -d= -f2)
 printf 'V\t%s\t\t03\tunknown\t/CN=Leaf\n' "$(date -u -d "$end" +%y%m%d%H%M%SZ)" > index.txt
 openssl ocsp -issuer inter.pem -sha256 -cert leaf.pem -no_nonce -reqout req.der 2>/dev/null
 openssl ocsp -index index.txt -rsigner inter.pem -rkey inter.key -CA inter.pem -reqin req.der -respout ocsp256.der 2>/dev/null
+# CRLs: crl <issuer> <index> <out>; the leaf is revoked in inter_rev
+crl() {
+    printf '[ca]\ndefault_ca=c\n[c]\ndatabase=%s\ncrlnumber=crlnum\ndefault_md=sha256\ndefault_crl_days=30\n%s' "$2" "$4" > crl.cnf
+    echo 01 > crlnum
+    openssl ca -config crl.cnf -gencrl -cert $1.pem -keyfile $1.key -out $3.pem 2>/dev/null
+    openssl crl -in $3.pem -outform DER -out $3.der
+}
+: > none.txt
+printf 'R\t%s\t%s\t03\tunknown\t/CN=Leaf\n' "$(date -u -d "$end" +%y%m%d%H%M%SZ)" "$(date -u +%y%m%d%H%M%SZ)" > revoked.txt
+crl root none.txt root_crl; crl inter none.txt inter_crl; crl inter revoked.txt inter_rev
+crl inter none.txt inter_delta "$(printf 'crl_extensions=x\n[x]\n2.5.29.27=critical,DER:02:01:01\n')"
+# another leaf of the same issuer, which the OCSP response does not cover
+openssl req -new -key leaf.key -subj /CN=Leaf2 | openssl x509 -req -CA inter.pem -CAkey inter.key -set_serial 5 -days 30 -extfile ee.ext -outform DER -out leaf2.der 2>/dev/null
 openssl crl2pkcs7 -nocrl -certfile leaf.pem -outform DER -out p7.der
 { cat leaf.der; printf '\n'; cat evil.pem; } > derpem.bin
 { cat p7.der; printf 'X'; } > p7junk.bin

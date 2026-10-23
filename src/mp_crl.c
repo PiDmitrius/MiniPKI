@@ -231,6 +231,15 @@ MP_API int32_t mp_crl_has_idp( MP_CRL crl, int32_t * has )
     return MP_OK;
 }
 
+MP_API int32_t mp_crl_is_delta( MP_CRL crl, int32_t * delta )
+{
+    if( !crl || !delta )
+        return MP_ERR_INVALID_ARG;
+
+    *delta = X509_CRL_get_ext_by_NID( crl->crl, NID_delta_crl, -1 ) >= 0;
+    return MP_OK;
+}
+
 MP_API int32_t mp_crl_verify( MP_CRL crl, MP_CERT issuer )
 {
     EVP_PKEY * pkey;

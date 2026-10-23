@@ -6,8 +6,8 @@
 #include <stddef.h>
 
 /* Version */
-#define MP_VERSION_MAJOR 1
-#define MP_VERSION_MINOR 1
+#define MP_VERSION_MAJOR 3
+#define MP_VERSION_MINOR 0
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -26,7 +26,8 @@
 extern "C" {
 #endif
 
-/* Handles are not thread-safe: a handle, and handles obtained from it,
+/* An MP_CTX does not change after mp_open and may be shared by threads.
+ * Other handles are not thread-safe: a handle, and handles obtained from it,
  * must not be used by several threads at once. Distinct handles may be used
  * concurrently. Binary input (starting with a DER SEQUENCE) is parsed only
  * as DER and must be consumed exactly; other input is parsed as text (PEM,
@@ -41,6 +42,8 @@ typedef struct MP_CHAIN_S * MP_CHAIN;
 typedef struct MP_BAG_S   * MP_BAG;
 typedef struct MP_OCSP_REQ_S  * MP_OCSP_REQ;
 typedef struct MP_OCSP_RESP_S * MP_OCSP_RESP;
+typedef struct MP_KEY_S   * MP_KEY;
+typedef struct MP_CMS_S   * MP_CMS;
 
 /* Context types */
 #define MP_TYPE_OPENSSL  1
@@ -63,8 +66,10 @@ MP_API uint32_t mp_version( void );
 
 /* -- Context ------------------------------------------------------- */
 
-/* If MINIPKI_GOST_ENGINE names the GOST engine, it is loaded on the first
- * call; MP_ERR_OPENSSL if it cannot be loaded. */
+/* The GOST engine is loaded on the first call: the one built into a
+ * self-contained library (shared, with OpenSSL inside), else the one
+ * MINIPKI_GOST_ENGINE names, if it does; MP_ERR_OPENSSL if it cannot be
+ * loaded. */
 MP_API int32_t mp_open( int32_t type, MP_CTX * ctx );
 MP_API int32_t mp_close( MP_CTX ctx );
 
@@ -164,10 +169,13 @@ MP_API int32_t mp_crl_issuer_name_der( MP_CRL crl,
 MP_API int32_t mp_crl_aki( MP_CRL crl,
                            const uint8_t ** out, size_t * outlen );
 
-/* Reports whether CRL has issuingDistributionPoint extension (RFC 5280 §5.2.5).
- * Presence implies scoped/partitioned/delta CRL — callers that don't parse IDP
- * should warn that revocation scope is not fully understood. */
+/* Reports whether CRL has issuingDistributionPoint extension (RFC 5280 §5.2.5):
+ * a scoped or partitioned CRL, which may not cover a certificate. */
 MP_API int32_t mp_crl_has_idp( MP_CRL crl, int32_t * has );
+/* Reports whether CRL is a delta CRL (deltaCRLIndicator, RFC 5280 §5.2.4),
+ * which lists only revocations since its base CRL. A certificate missing from
+ * a scoped or delta CRL is not shown unrevoked by it. */
+MP_API int32_t mp_crl_is_delta( MP_CRL crl, int32_t * delta );
 
 /* Verifies CRL signature against issuer's public key.
  * Returns MP_OK on valid signature, MP_ERR_VERIFY on bad signature,
@@ -187,7 +195,14 @@ MP_API int32_t mp_store_add_intermediate( MP_STORE store,
                                           const uint8_t * cert, size_t certlen );
 MP_API int32_t mp_store_add_crl( MP_STORE store,
                                  const uint8_t * crl, size_t crllen );
-MP_API int32_t mp_store_set_crl_check( MP_STORE store, int32_t enable );
+
+/* Verification flags; none are set on a new store. */
+#define MP_VERIFY_CRL_CHECK     0x1  /* every certificate needs its CRL */
+#define MP_VERIFY_CHECK_SS_SIG  0x2  /* check the signature of a self-signed
+                                        trust anchor */
+
+/* Replaces the verification flags of the store. */
+MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags );
 
 /* -- Verification -------------------------------------------------- */
 
@@ -212,14 +227,18 @@ MP_API int32_t mp_ocsp_request_close( MP_OCSP_REQ req );
 MP_API int32_t mp_ocsp_request_der( MP_OCSP_REQ req,
                                      const uint8_t ** der, size_t * derlen );
 
+/* MP_ERR_PARSE also when the response has no status for cert. */
 MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
                                         MP_CERT cert, MP_CERT issuer,
                                         const uint8_t * data, size_t datalen,
                                         MP_OCSP_RESP * resp );
 MP_API int32_t mp_ocsp_response_close( MP_OCSP_RESP resp );
 
-/* Status and times come from the response's own fields whether or not its
- * signature verified: trust them only when mp_ocsp_verified reports 1. */
+/* Status and times come from the response's own fields whether or not it
+ * verified: trust them only when mp_ocsp_verified reports 1, which takes a
+ * valid signature by the issuer or its OCSP responder and a current status
+ * (thisUpdate not in the future, nextUpdate not passed, 5 minutes of clock
+ * skew). Only MP_OCSP_GOOD shows a certificate unrevoked. */
 MP_API int32_t mp_ocsp_status( MP_OCSP_RESP resp, int32_t * status );
 MP_API int32_t mp_ocsp_verified( MP_OCSP_RESP resp, int32_t * verified );
 MP_API int32_t mp_ocsp_this_update( MP_OCSP_RESP resp, int64_t * time );
@@ -229,6 +248,73 @@ MP_API int32_t mp_ocsp_revoked_at( MP_OCSP_RESP resp, int64_t * time );
 MP_API int32_t mp_ocsp_revoke_reason( MP_OCSP_RESP resp, int32_t * reason );
 MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
                              const uint8_t ** der, size_t * derlen );
+
+/* -- Key ----------------------------------------------------------- */
+
+/* A signing key: a GOST R 34.10-2012 256-bit key on the CryptoPro-A
+ * parameter set, generated or imported from its raw form, the 32-byte
+ * little-endian private scalar as in its PKCS#8 (these need the GOST engine,
+ * see mp_open); or an RSA or EC key imported from PKCS#8, other PKCS#8 keys
+ * being MP_ERR_PARSE. */
+#define MP_KEY_RAW_LEN  32
+
+MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );
+MP_API int32_t mp_key_import( MP_CTX ctx,
+                              const uint8_t * raw, size_t rawlen,
+                              MP_KEY * key );
+MP_API int32_t mp_key_import_pkcs8( MP_CTX ctx,
+                                    const uint8_t * der, size_t derlen,
+                                    MP_KEY * key );
+MP_API int32_t mp_key_close( MP_KEY key );
+
+/* The raw form of a key generated or imported from its raw form;
+ * MP_ERR_INVALID_ARG for a key from PKCS#8. */
+MP_API int32_t mp_key_raw( MP_KEY key,
+                           const uint8_t ** raw, size_t * rawlen );
+/* SubjectPublicKeyInfo DER */
+MP_API int32_t mp_key_spki( MP_KEY key,
+                            const uint8_t ** der, size_t * derlen );
+
+/* Signs data over the GOST R 34.11-2012 256-bit hash for a GOST key and
+ * SHA-256 for others. The signature is the signatureValue of X.509
+ * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256,
+ * sha256WithRSAEncryption or ecdsa-with-SHA256, valid until the next
+ * mp_key_sign on the key. */
+MP_API int32_t mp_key_sign( MP_KEY key,
+                            const uint8_t * data, size_t datalen,
+                            const uint8_t ** sig, size_t * siglen );
+
+/* -- CMS ----------------------------------------------------------- */
+
+/* Parses a DER CMS SignedData with its content and exactly one signer, and
+ * verifies the signature with the signer certificate: the one given, or
+ * else the one the SignedData carries; the certificate itself is not
+ * verified. MP_ERR_VERIFY on a bad signature. */
+MP_API int32_t mp_cms_verify( MP_CTX ctx,
+                              const uint8_t * data, size_t datalen,
+                              const uint8_t * signer, size_t signerlen,
+                              MP_CMS * cms );
+/* Signs content of the given content type (a dotted OID, NULL for id-data)
+ * with key, whose certificate is signer, into a DER CMS SignedData holding
+ * the content and exactly the certificates certs, which need not include
+ * signer. */
+MP_API int32_t mp_cms_sign( MP_KEY key,
+                            const uint8_t * signer, size_t signerlen,
+                            const char * content_type,
+                            const uint8_t * content, size_t contentlen,
+                            const uint8_t * const * certs, const size_t * certlens,
+                            size_t ncerts,
+                            MP_CMS * cms );
+MP_API int32_t mp_cms_close( MP_CMS cms );
+/* The DER of a SignedData made by mp_cms_sign; MP_ERR_INVALID_ARG for one
+ * from mp_cms_verify. */
+MP_API int32_t mp_cms_der( MP_CMS cms,
+                           const uint8_t ** der, size_t * derlen );
+
+MP_API int32_t mp_cms_content( MP_CMS cms,
+                               const uint8_t ** content, size_t * contentlen );
+MP_API int32_t mp_cms_signer( MP_CMS cms,
+                              const uint8_t ** der, size_t * derlen );
 
 /* -- Chain --------------------------------------------------------- */
 

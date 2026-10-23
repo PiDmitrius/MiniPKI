@@ -2,12 +2,11 @@
 
 ROOT := ..
 
-CFLAGS := -Wall -O2 -fPIC -Werror -Wno-unused-function -fvisibility=hidden -std=c11
+CFLAGS := -Wall -O2 -fPIC -Werror -fvisibility=hidden -std=c11
 
 , := ,
 
 OPENSSL_BASE := /opt/openssl
-GOST_ENGINE_SRC := /tmp/gost-engine-src
 
 # 6 targets
 TARGETS := linux-amd64 linux-arm64 macos-amd64 macos-arm64 windows-amd64 windows-arm64
@@ -45,10 +44,12 @@ EXEEXT_windows-amd64  := .exe
 EXEEXT_windows-arm64  := .exe
 
 # MiniPKI source files
-MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c
+MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c mp_key.c mp_cms.c
 
-# Object files for a target
+# Object files for a target: the static library takes the GOST engine its
+# user loads, the shared one carries OpenSSL and the GOST engine inside
 MP_OBJS = $(patsubst %.c,out/$(1)/%.o,$(MP_SRCS))
+MP_LIB_OBJS = $(subst out/$(1)/mp_ctx.o,out/$(1)/mp_ctx_builtin.o,$(call MP_OBJS,$(1)))
 
 # Platform link flags
 PLAT_LDFLAGS = -L$(OPENSSL_BASE)/$(1)/lib -lgost -lcrypto \
@@ -85,9 +86,17 @@ out/$(1)/%.o: $(ROOT)/src/%.c | out/$(1)
 		-I$(ROOT)/src \
 		-c $$< -o $$@
 
+out/$(1)/mp_ctx_builtin.o: $(ROOT)/src/mp_ctx.c | out/$(1)
+	zig cc $$(CFLAGS) -DMINIPKI_GOST_BUILTIN -target $$(ZIG_$(1)) \
+		-I$(ROOT)/include \
+		-I$(OPENSSL_BASE)/$(1)/include \
+		-I$(ROOT)/src \
+		-c $$< -o $$@
+
 out/$(1)/test_minipki.o: $(ROOT)/test/test_minipki.c | out/$(1)
 	zig cc $$(CFLAGS) -Wno-error -target $$(ZIG_$(1)) \
 		-I$(ROOT)/include \
+		-I$(OPENSSL_BASE)/$(1)/include \
 		-c $$< -o $$@
 
 # Static library
@@ -95,17 +104,17 @@ $(call outstatic,$(1)): $(call MP_OBJS,$(1))
 	zig ar rcs $$@ $$^
 
 # Shared library
-$(call outlib,$(1)): $(call MP_OBJS,$(1))
+$(call outlib,$(1)): $(call MP_LIB_OBJS,$(1))
 	zig cc -target $$(ZIG_$(1)) -shared -s -o $$@ $$^ \
 		$(call PLAT_LDFLAGS,$(1)) \
 		$(if $(findstring windows,$(1)),-Wl$(,)--out-implib$(,)out/$(1)/minipki.lib,) \
 		$(if $(findstring linux,$(1)),-Wl$(,)-soname$(,)$(PFX_$(1))minipki$(EXT_$(1)) -Wl$(,)--version-script$(,)$(ROOT)/build/minipki.map,) \
 		$(if $(findstring macos,$(1)),-Wl$(,)-install_name$(,)@rpath/$(PFX_$(1))minipki$(EXT_$(1)),)
 
-# Test binary (dynamic)
+# Test binary: MiniPKI dynamic, OpenSSL static for the fixtures it builds
 $(call outtest,$(1)): out/$(1)/test_minipki.o $(call outlib,$(1))
 	zig cc -target $$(ZIG_$(1)) -s -o $$@ out/$(1)/test_minipki.o \
-		-Lout/$(1) -lminipki \
+		-Lout/$(1) -lminipki $(call PLAT_LDFLAGS,$(1)) \
 		$(if $(findstring linux,$(1)),-Wl$(,)-rpath$(,)'$$$$ORIGIN',) \
 		$(if $(findstring macos,$(1)),-Wl$(,)-rpath$(,)'@executable_path' -Wl$(,)-headerpad$(,)0x1000,)
 endef

@@ -13,6 +13,7 @@
  *  9:  mp_chain accessors
  *  10: CRL parse + mp_crl_verify (good sig & tampered sig)
  *  11: Error handling (NULL args)
+ *  12: GOST keys: generate, import, sign (with MINIPKI_GOST_ENGINE)
  *
  * Pure C consumer of minipki.h
  */
@@ -20,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "minipki.h"
+#include <openssl/ocsp.h>
+#include <openssl/pem.h>
 
 /* Cross-platform temp path for generated test cert */
 #ifdef _WIN32
@@ -520,7 +523,82 @@ static int test_hardening( void )
     size_t msglen;
     CHECK( mp_verify_last_error( store, &code, &depth, &msg, &msglen ), "mp_verify_last_error" );
     EXPECT( code, 0, "last error cleared after success" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(anchor signature checked)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    EXPECT( mp_store_set_flags( store, 0x80 ), MP_ERR_INVALID_ARG,
+            "mp_store_set_flags(unknown flag)" );
     CHECK( mp_store_close( store ), "mp_store_close" );
+
+    /* The signature of a self-signed anchor is checked only on request */
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    d = fx( "root.der", &n );
+    d[ n - 1 ] ^= 1;
+    CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root(bad signature)" );
+    free( d );
+    d = fx( "inter.der", &n );
+    CHECK( mp_store_add_intermediate( store, d, n ), "mp_store_add_intermediate" );
+    free( d );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(anchor signature unchecked)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    EXPECT( mp_verify( store, leaf, &chain ), MP_ERR_VERIFY,
+            "mp_verify(bad anchor signature)" );
+    CHECK( mp_store_set_flags( store, 0 ), "mp_store_set_flags(none)" );
+    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(flag cleared)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+
+    /* A root that is not self-signed is not a trust anchor */
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    d = fx( "inter.der", &n );
+    CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root(intermediate)" );
+    free( d );
+    EXPECT( mp_verify( store, leaf, &chain ), MP_ERR_NO_CHAIN,
+            "mp_verify(intermediate root)" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+
+    /* With CRLs every certificate needs its issuer's CRL, and a revoked one fails */
+    const char * crls[][ 2 ] = { { "root_crl.der", "inter_crl.der" }, { "root_crl.der", NULL },
+                                 { "root_crl.der", "inter_rev.der" } };
+    const int32_t want[] = { MP_OK, MP_ERR_NO_CRL, MP_ERR_REVOKED };
+    const char * what[] = { "mp_verify(CRLs)", "mp_verify(no CRL of the intermediate)", "mp_verify(revoked)" };
+    for( int i = 0; i < 3; i++ )
+    {
+        CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+        d = fx( "root.der", &n );
+        CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root" );
+        free( d );
+        d = fx( "inter.der", &n );
+        CHECK( mp_store_add_intermediate( store, d, n ), "mp_store_add_intermediate" );
+        free( d );
+        for( int j = 0; j < 2 && crls[ i ][ j ]; j++ )
+        {
+            d = fx( crls[ i ][ j ], &n );
+            CHECK( mp_store_add_crl( store, d, n ), "mp_store_add_crl" );
+            free( d );
+        }
+        CHECK( mp_store_set_flags( store, MP_VERIFY_CRL_CHECK ), "mp_store_set_flags(CRLs)" );
+        int32_t rc = mp_verify( store, leaf, &chain );
+        EXPECT( rc, want[ i ], what[ i ] );
+        if( rc == MP_OK )
+            CHECK( mp_chain_close( chain ), "mp_chain_close" );
+        CHECK( mp_store_close( store ), "mp_store_close" );
+    }
+
+    /* A delta CRL is told apart from a full one */
+    MP_CRL dcrl;
+    int32_t delta = -1;
+    const char * deltas[] = { "inter_delta.der", "inter_crl.der" };
+    for( int i = 0; i < 2; i++ )
+    {
+        d = fx( deltas[ i ], &n );
+        CHECK( mp_crl_parse( ctx, d, n, &dcrl ), "mp_crl_parse" );
+        free( d );
+        CHECK( mp_crl_is_delta( dcrl, &delta ), "mp_crl_is_delta" );
+        EXPECT( delta, i == 0, i == 0 ? "delta CRL" : "full CRL is not delta" );
+        CHECK( mp_crl_close( dcrl ), "mp_crl_close" );
+    }
 
     /* OCSP status is found with the response's own CertID hash (SHA-256) */
     d = fx( "ocsp256.der", &n );
@@ -545,9 +623,411 @@ static int test_hardening( void )
     g_tests_passed++;
     CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
 
+    /* A response without a status for the certificate is not one about it */
+    MP_CERT leaf2;
+    d = fx( "leaf2.der", &n );
+    CHECK( mp_cert_parse( ctx, d, n, &leaf2 ), "mp_cert_parse(leaf2)" );
+    free( d );
+    d = fx( "ocsp256.der", &n );
+    EXPECT( mp_ocsp_response_parse( ctx, leaf2, inter, d, n, &resp ), MP_ERR_PARSE,
+            "mp_ocsp_response_parse(another certificate)" );
+    free( d );
+    CHECK( mp_cert_close( leaf2 ), "mp_cert_close" );
+
+    /* A stale status, signed by the issuer, does not verify */
+    {
+        FILE * f;
+        X509 * lx = NULL, * ix = NULL;
+        EVP_PKEY * ik = NULL;
+        if( ( f = fopen( FX_DIR "/leaf.pem", "r" ) ) ) { lx = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.pem", "r" ) ) ) { ix = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.key", "r" ) ) ) { ik = PEM_read_PrivateKey( f, NULL, NULL, NULL ); fclose( f ); }
+        OCSP_BASICRESP * bs = OCSP_BASICRESP_new();
+        OCSP_CERTID * id = lx && ix ? OCSP_cert_to_id( EVP_sha256(), lx, ix ) : NULL;
+        ASN1_TIME * t0 = X509_gmtime_adj( NULL, -2 * 86400 ), * t1 = X509_gmtime_adj( NULL, -86400 );
+        OCSP_RESPONSE * or = NULL;
+        uint8_t * der = NULL;
+        int derlen = -1;
+        if( bs && id && ik && t0 && t1 &&
+            OCSP_basic_add1_status( bs, id, V_OCSP_CERTSTATUS_GOOD, 0, NULL, t0, t1 ) &&
+            OCSP_basic_sign( bs, ix, ik, EVP_sha256(), NULL, 0 ) &&
+            ( or = OCSP_response_create( OCSP_RESPONSE_STATUS_SUCCESSFUL, bs ) ) )
+            derlen = i2d_OCSP_RESPONSE( or, &der );
+        if( derlen <= 0 )
+        {
+            fprintf( stderr, "FAIL: could not make a stale OCSP response\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( mp_ocsp_response_parse( ctx, leaf, inter, der, (size_t)derlen, &resp ), "mp_ocsp_response_parse(stale)" );
+        CHECK( mp_ocsp_status( resp, &status ), "mp_ocsp_status" );
+        CHECK( mp_ocsp_verified( resp, &verified ), "mp_ocsp_verified" );
+        EXPECT( status, MP_OCSP_GOOD, "stale OCSP status read" );
+        EXPECT( verified, 0, "stale OCSP response not verified" );
+        CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
+        OPENSSL_free( der );
+        OCSP_RESPONSE_free( or );
+        OCSP_BASICRESP_free( bs );
+        OCSP_CERTID_free( id );
+        ASN1_TIME_free( t0 );
+        ASN1_TIME_free( t1 );
+        X509_free( lx );
+        X509_free( ix );
+        EVP_PKEY_free( ik );
+    }
+
     CHECK( mp_cert_close( leaf ), "mp_cert_close" );
     CHECK( mp_cert_close( inter ), "mp_cert_close" );
     CHECK( mp_cert_close( eleaf ), "mp_cert_close" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    return 0;
+}
+#endif
+
+#ifndef _WIN32
+/* Length of the DER element at p, header included. */
+static size_t der_len( const uint8_t * p )
+{
+    size_t n = p[ 1 ], h = 2;
+    if( n & 0x80 )
+    {
+        size_t k = n & 0x7f;
+        for( n = 0; k--; h++ )
+            n = ( n << 8 ) | p[ h ];
+    }
+    return h + n;
+}
+
+/* Replaces the signature of a DER certificate or CRL signed with a 256-bit
+   GOST key by key's signature of its to-be-signed part. */
+#define GOST_SIG_LEN 64
+
+static int32_t gost_resign( MP_KEY key, uint8_t * der, size_t len )
+{
+    const uint8_t * tbs = der + 2 + ( der[ 1 ] & 0x80 ? der[ 1 ] & 0x7f : 0 ), * sig;
+    size_t siglen;
+    int32_t rc;
+    if( der_len( der ) != len || len < GOST_SIG_LEN )
+        return MP_ERR_INVALID_ARG;
+    if( ( rc = mp_key_sign( key, tbs, der_len( tbs ), &sig, &siglen ) ) != MP_OK )
+        return rc;
+    if( siglen != GOST_SIG_LEN )
+        return MP_ERR_UNEXPECTED;
+    memcpy( der + len - GOST_SIG_LEN, sig, GOST_SIG_LEN );
+    return MP_OK;
+}
+
+#define GOST_DIR "/tmp/test_minipki_gost"
+
+static int write_file( const char * path, const uint8_t * data, size_t len )
+{
+    FILE * f = fopen( path, "wb" );
+    if( !f )
+        return 1;
+    size_t n = fwrite( data, 1, len, f );
+    return fclose( f ) != 0 || n != len;
+}
+
+/* Runs an openssl CLI command in GOST_DIR on the GOST engine. */
+static int gost_cli( const char * cmd )
+{
+    char buf[ 512 ];
+    snprintf( buf, sizeof( buf ),
+              "cd " GOST_DIR " && OPENSSL_CONF=eng.cnf %s >/dev/null 2>&1", cmd );
+    return system( buf );
+}
+
+static int gost_verify_data( const uint8_t * spki, size_t spkilen,
+                             const uint8_t * sig,
+                             const uint8_t * data, size_t datalen )
+{
+    if( write_file( GOST_DIR "/pub.der", spki, spkilen ) ||
+        write_file( GOST_DIR "/sig", sig, GOST_SIG_LEN ) ||
+        write_file( GOST_DIR "/data", data, datalen ) )
+        return 1;
+    return gost_cli( "openssl dgst -md_gost12_256 -keyform DER "
+                     "-verify pub.der -signature sig data" );
+}
+
+static int gost_verify_cert( const uint8_t * der, size_t len )
+{
+    if( write_file( GOST_DIR "/check.der", der, len ) ||
+        gost_cli( "openssl x509 -inform DER -in check.der -out check.pem" ) )
+        return 1;
+    return gost_cli( "openssl verify -check_ss_sig -CAfile check.pem check.pem" );
+}
+
+/* Verifies a CRL issued by the certificate last given to gost_verify_cert. */
+static int gost_verify_crl( const uint8_t * der, size_t len )
+{
+    if( write_file( GOST_DIR "/check.crl", der, len ) )
+        return 1;
+    return gost_cli( "openssl crl -inform DER -in check.crl -CAfile check.pem -noout" );
+}
+
+/* Signs with a generated and a re-imported GOST key data, a certificate and
+   a CRL, and verifies them with MiniPKI and the openssl CLI; runs only when
+   MINIPKI_GOST_ENGINE names the GOST engine. */
+static int test_key( void )
+{
+    MP_CTX ctx = NULL;
+    MP_KEY key = NULL, back = NULL;
+    MP_CERT ca = NULL;
+    MP_CRL crl = NULL;
+    MP_STORE store = NULL;
+    MP_CHAIN chain = NULL;
+    const uint8_t * raw, * spki, * spki2;
+    size_t rawlen, spkilen, spki2len, ca_len, crl_len;
+    uint8_t * ca_der, * crl_der;
+    static const uint8_t data[] = "MiniPKI GOST signing";
+    const uint8_t * signed_by;
+    size_t siglen;
+    uint8_t sig[ GOST_SIG_LEN ], bad[ MP_KEY_RAW_LEN ];
+
+    printf( "\n[8] GOST key\n" );
+    if( !getenv( "MINIPKI_GOST_ENGINE" ) )
+    {
+        printf( "  SKIP: MINIPKI_GOST_ENGINE not set\n" );
+        return 0;
+    }
+
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+    CHECK( mp_key_generate( ctx, &key ), "mp_key_generate" );
+    CHECK( mp_key_raw( key, &raw, &rawlen ), "mp_key_raw" );
+    CHECK( mp_key_spki( key, &spki, &spkilen ), "mp_key_spki" );
+
+    /* The openssl CLI makes a certificate and a CRL with the same key */
+    if( system( "rm -rf " GOST_DIR " && mkdir " GOST_DIR ) ||
+        write_file( GOST_DIR "/raw", raw, rawlen ) ||
+        system( "sh ../test/gen_gost.sh " GOST_DIR " " REDIR_NULL ) ||
+        !( ca_der = read_file( GOST_DIR "/ca.der", &ca_len ) ) ||
+        !( crl_der = read_file( GOST_DIR "/crl.der", &crl_len ) ) )
+    {
+        fprintf( stderr, "FAIL: could not generate GOST fixtures\n" );
+        g_tests_failed++;
+        return 1;
+    }
+
+    CHECK( mp_key_sign( key, data, sizeof( data ), &signed_by, &siglen ), "mp_key_sign" );
+    EXPECT( siglen, GOST_SIG_LEN, "GOST signature length" );
+    memcpy( sig, signed_by, GOST_SIG_LEN );
+    EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ), 0,
+            "openssl verifies signature" );
+
+    CHECK( mp_key_import( ctx, raw, rawlen, &back ), "mp_key_import" );
+    CHECK( mp_key_spki( back, &spki2, &spki2len ), "mp_key_spki(imported)" );
+    EXPECT( spki2len == spkilen && !memcmp( spki, spki2, spkilen ), 1,
+            "imported key has the same public key" );
+    CHECK( mp_key_sign( back, data, sizeof( data ), &signed_by, &siglen ),
+           "mp_key_sign(imported)" );
+    memcpy( sig, signed_by, GOST_SIG_LEN );
+    EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ), 0,
+            "openssl verifies imported key signature" );
+    sig[ 0 ] ^= 1;
+    EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ) != 0, 1,
+            "openssl rejects tampered signature" );
+
+    /* The signature is the signatureValue of a certificate and a CRL */
+    CHECK( gost_resign( back, ca_der, ca_len ), "re-sign certificate" );
+    CHECK( gost_resign( back, crl_der, crl_len ), "re-sign CRL" );
+    CHECK( mp_cert_parse( ctx, ca_der, ca_len, &ca ), "mp_cert_parse(GOST)" );
+    CHECK( mp_crl_parse( ctx, crl_der, crl_len, &crl ), "mp_crl_parse(GOST)" );
+    CHECK( mp_crl_verify( crl, ca ), "mp_crl_verify(re-signed)" );
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    CHECK( mp_store_add_root( store, ca_der, ca_len ), "mp_store_add_root(GOST)" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    CHECK( mp_verify( store, ca, &chain ), "mp_verify(re-signed anchor)" );
+    CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    EXPECT( gost_verify_cert( ca_der, ca_len ), 0,
+            "openssl verifies re-signed certificate" );
+    EXPECT( gost_verify_crl( crl_der, crl_len ), 0,
+            "openssl verifies re-signed CRL" );
+    CHECK( mp_crl_close( crl ), "mp_crl_close" );
+    crl_der[ crl_len - 1 ] ^= 1;
+    CHECK( mp_crl_parse( ctx, crl_der, crl_len, &crl ), "mp_crl_parse(tampered)" );
+    EXPECT( mp_crl_verify( crl, ca ), MP_ERR_VERIFY, "mp_crl_verify(tampered)" );
+    ca_der[ ca_len - 1 ] ^= 1;
+    EXPECT( gost_verify_cert( ca_der, ca_len ) != 0, 1,
+            "openssl rejects tampered certificate" );
+    CHECK( mp_cert_close( ca ), "mp_cert_close" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+    CHECK( mp_cert_parse( ctx, ca_der, ca_len, &ca ), "mp_cert_parse(tampered)" );
+    CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+    CHECK( mp_store_add_root( store, ca_der, ca_len ), "mp_store_add_root(tampered)" );
+    CHECK( mp_store_set_flags( store, MP_VERIFY_CHECK_SS_SIG ), "mp_store_set_flags" );
+    EXPECT( mp_verify( store, ca, &chain ), MP_ERR_VERIFY,
+            "mp_verify(tampered anchor)" );
+    CHECK( mp_store_close( store ), "mp_store_close" );
+    CHECK( mp_crl_close( crl ), "mp_crl_close" );
+    CHECK( mp_cert_close( ca ), "mp_cert_close" );
+    free( ca_der );
+    free( crl_der );
+
+    /* A CMS SignedData made by the openssl CLI */
+    MP_CMS cms = NULL;
+    const uint8_t * content, * signer;
+    size_t content_len, signer_len, cms_len;
+    uint8_t * cms_der = read_file( GOST_DIR "/intent.cms", &cms_len );
+    ca_der = read_file( GOST_DIR "/ca.der", &ca_len );
+    if( !cms_der || !ca_der )
+    {
+        fprintf( stderr, "FAIL: could not read the CMS fixture\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    CHECK( mp_cms_verify( ctx, cms_der, cms_len, NULL, 0, &cms ), "mp_cms_verify" );
+    CHECK( mp_cms_content( cms, &content, &content_len ), "mp_cms_content" );
+    CHECK( mp_cms_signer( cms, &signer, &signer_len ), "mp_cms_signer" );
+    EXPECT( content_len == 13 && !memcmp( content, "tuc revoke 01", 13 ), 1,
+            "CMS content" );
+    EXPECT( signer_len == ca_len && !memcmp( signer, ca_der, ca_len ), 1,
+            "CMS signer certificate" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    cms_der[ cms_len - 1 ] ^= 1;
+    EXPECT( mp_cms_verify( ctx, cms_der, cms_len, NULL, 0, &cms ), MP_ERR_VERIFY,
+            "mp_cms_verify(tampered signature)" );
+    EXPECT( mp_cms_verify( ctx, cms_der, cms_len - 1, NULL, 0, &cms ), MP_ERR_PARSE,
+            "mp_cms_verify(truncated)" );
+    free( cms_der );
+
+    /* mp_cms_sign makes what mp_cms_verify and the openssl CLI accept */
+    const uint8_t * cert_list[] = { ca_der };
+    const size_t cert_lens[] = { ca_len };
+    const uint8_t * signed_der;
+    size_t signed_len;
+    CHECK( mp_cms_sign( key, ca_der, ca_len, "1.3.6.1.5.5.7.12.3",
+                        (const uint8_t *)"hello", 5, cert_list, cert_lens, 1, &cms ),
+           "mp_cms_sign" );
+    CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+    MP_CMS back_cms = NULL;
+    CHECK( mp_cms_verify( ctx, signed_der, signed_len, NULL, 0, &back_cms ), "mp_cms_verify(mp_cms_sign)" );
+    CHECK( mp_cms_content( back_cms, &content, &content_len ), "mp_cms_content" );
+    EXPECT( content_len == 5 && !memcmp( content, "hello", 5 ), 1, "signed content" );
+    CHECK( mp_cms_close( back_cms ), "mp_cms_close" );
+    EXPECT( write_file( GOST_DIR "/signed.cms", signed_der, signed_len ) ||
+            gost_cli( "openssl cms -verify -noverify -binary -inform DER -in signed.cms" ), 0,
+            "openssl verifies mp_cms_sign" );
+    EXPECT( gost_cli( "openssl cms -cmsout -print -inform DER -in signed.cms | "
+                      "grep -q 'eContentType: id-cct-PKIResponse'" ), 0,
+            "content type of mp_cms_sign" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    CHECK( mp_cms_sign( key, ca_der, ca_len, NULL, NULL, 0, NULL, NULL, 0, &cms ),
+           "mp_cms_sign(no certificates)" );
+    CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+    EXPECT( mp_cms_verify( ctx, signed_der, signed_len, NULL, 0, &back_cms ) != MP_OK, 1,
+            "no certificates in a CMS signed without them" );
+    CHECK( mp_cms_verify( ctx, signed_der, signed_len, ca_der, ca_len, &back_cms ),
+           "mp_cms_verify(given signer)" );
+    CHECK( mp_cms_close( back_cms ), "mp_cms_close" );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    CHECK( mp_cms_sign( key, ca_der, ca_len, NULL, NULL, 0, cert_list, cert_lens, 1, &cms ),
+           "mp_cms_sign(with its certificate)" );
+    CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+    size_t other_len;
+    uint8_t * other = read_file( TEST_CERT_PATH, &other_len );
+    EXPECT( other && mp_cms_verify( ctx, signed_der, signed_len, other, other_len,
+                                    &back_cms ) == MP_ERR_VERIFY, 1,
+            "mp_cms_verify(another given signer)" );
+    free( other );
+    CHECK( mp_cms_close( cms ), "mp_cms_close" );
+    free( ca_der );
+
+    EXPECT( mp_key_import( ctx, raw, rawlen - 1, &back ), MP_ERR_INVALID_ARG,
+            "mp_key_import(short)" );
+    memset( bad, 0, sizeof( bad ) );
+    EXPECT( mp_key_import( ctx, bad, sizeof( bad ), &back ), MP_ERR_OPENSSL,
+            "mp_key_import(zero)" );
+    memset( bad, 0xff, sizeof( bad ) );
+    EXPECT( mp_key_import( ctx, bad, sizeof( bad ), &back ), MP_ERR_OPENSSL,
+            "mp_key_import(not below the group order)" );
+    CHECK( mp_key_close( back ), "mp_key_close(imported)" );
+    CHECK( mp_key_close( key ), "mp_key_close" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    return 0;
+}
+#endif
+
+#ifndef _WIN32
+/* RSA and ECDSA keys from PKCS#8 sign data and CMS that the openssl CLI
+   verifies with SHA-256. */
+static int test_pkcs8_keys( void )
+{
+    MP_CTX ctx = NULL;
+    MP_KEY key = NULL;
+    MP_CMS cms = NULL;
+    const char * algs[] = { "RSA -pkeyopt rsa_keygen_bits:2048", "EC -pkeyopt ec_paramgen_curve:P-256" };
+    static const uint8_t data[] = "MiniPKI PKCS#8 signing";
+    const uint8_t * spki, * sig, * der;
+    size_t spkilen, siglen, derlen, n;
+    char cmd[ 512 ];
+    uint8_t * other = NULL;
+    size_t otherlen = 0;
+
+    printf( "\n[9] PKCS#8 keys\n" );
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+    for( size_t i = 0; i < 2; i++ )
+    {
+        snprintf( cmd, sizeof( cmd ), "rm -rf " GOST_DIR " && mkdir " GOST_DIR " && cd " GOST_DIR " && "
+                  "openssl genpkey -algorithm %s -out key.pem && openssl pkcs8 -topk8 -nocrypt -in key.pem -outform DER -out key.der && "
+                  "openssl req -new -x509 -key key.der -keyform DER -subj /CN=k -days 1 -out cert.pem %s", algs[ i ], REDIR_NULL );
+        uint8_t * p8;
+        if( system( cmd ) || !( p8 = read_file( GOST_DIR "/key.der", &n ) ) )
+        {
+            fprintf( stderr, "FAIL: could not make a key\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( mp_key_import_pkcs8( ctx, p8, n, &key ), "mp_key_import_pkcs8" );
+        free( p8 );
+        EXPECT( mp_key_raw( key, &der, &derlen ), MP_ERR_INVALID_ARG, "no raw form" );
+        CHECK( mp_key_spki( key, &spki, &spkilen ), "mp_key_spki" );
+        CHECK( mp_key_sign( key, data, sizeof( data ), &sig, &siglen ), "mp_key_sign" );
+        EXPECT( write_file( GOST_DIR "/pub.der", spki, spkilen ) || write_file( GOST_DIR "/sig", sig, siglen ) ||
+                write_file( GOST_DIR "/data", data, sizeof( data ) ) ||
+                system( "cd " GOST_DIR " && openssl dgst -sha256 -keyform DER -verify pub.der -signature sig data >/dev/null 2>&1" ), 0,
+                "openssl verifies the SHA-256 signature" );
+        uint8_t * cert = read_file( GOST_DIR "/cert.pem", &n );
+        MP_BAG bag = NULL;
+        const uint8_t * cder;
+        size_t cderlen;
+        CHECK( mp_bag_parse( ctx, cert, n, &bag ), "mp_bag_parse" );
+        CHECK( mp_bag_cert_der( bag, 0, &cder, &cderlen ), "mp_bag_cert_der" );
+        CHECK( mp_cms_sign( key, cder, cderlen, NULL, data, sizeof( data ), &cder, &cderlen, 1, &cms ), "mp_cms_sign" );
+        CHECK( mp_cms_der( cms, &der, &derlen ), "mp_cms_der" );
+        EXPECT( write_file( GOST_DIR "/s.cms", der, derlen ) ||
+                system( "cd " GOST_DIR " && openssl cms -verify -noverify -binary -inform DER -in s.cms >/dev/null 2>&1" ), 0,
+                "openssl verifies the CMS" );
+        MP_CMS v = NULL;
+        CHECK( mp_cms_verify( ctx, der, derlen, cder, cderlen, &v ), "mp_cms_verify(given signer)" );
+        CHECK( mp_cms_close( v ), "mp_cms_close" );
+        EXPECT( mp_cms_verify( ctx, der, derlen, NULL, 1, &v ), MP_ERR_INVALID_ARG, "mp_cms_verify(no signer, a length)" );
+        EXPECT( mp_cms_sign( key, cder, cderlen, "not an OID", data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_PARSE,
+                "mp_cms_sign(bad content type)" );
+        if( other )  /* the certificate of the other key */
+            EXPECT( mp_cms_sign( key, other, otherlen, NULL, data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_OPENSSL,
+                    "mp_cms_sign(another key's certificate)" );
+        else if( ( other = malloc( cderlen ) ) )
+        {
+            memcpy( other, cder, cderlen );
+            otherlen = cderlen;
+        }
+        CHECK( mp_cms_close( cms ), "mp_cms_close" );
+        CHECK( mp_bag_close( bag ), "mp_bag_close" );
+        free( cert );
+        CHECK( mp_key_close( key ), "mp_key_close" );
+    }
+    free( other );
+    EXPECT( mp_key_import_pkcs8( ctx, data, sizeof( data ), &key ), MP_ERR_PARSE, "mp_key_import_pkcs8(garbage)" );
+    uint8_t * ed;
+    if( system( "cd " GOST_DIR " && openssl genpkey -algorithm ED25519 -outform DER -out ed.der " REDIR_NULL ) ||
+        !( ed = read_file( GOST_DIR "/ed.der", &n ) ) )
+    {
+        fprintf( stderr, "FAIL: could not make an Ed25519 key\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    EXPECT( mp_key_import_pkcs8( ctx, ed, n, &key ), MP_ERR_PARSE, "mp_key_import_pkcs8(Ed25519)" );
+    free( ed );
     CHECK( mp_close( ctx ), "mp_close" );
     return 0;
 }
@@ -563,6 +1043,8 @@ static int test_error_handling( void )
     EXPECT( mp_crl_close( NULL ), MP_ERR_INVALID_ARG, "mp_crl_close(NULL)" );
     EXPECT( mp_store_close( NULL ), MP_ERR_INVALID_ARG, "mp_store_close(NULL)" );
     EXPECT( mp_chain_close( NULL ), MP_ERR_INVALID_ARG, "mp_chain_close(NULL)" );
+    EXPECT( mp_key_close( NULL ), MP_ERR_INVALID_ARG, "mp_key_close(NULL)" );
+    EXPECT( mp_cms_close( NULL ), MP_ERR_INVALID_ARG, "mp_cms_close(NULL)" );
 
     return 0;
 }
@@ -580,6 +1062,8 @@ int main( void )
 #ifndef _WIN32
     rc |= test_crl_verify();
     rc |= test_hardening();
+    rc |= test_key();
+    rc |= test_pkcs8_keys();
 #endif
     rc |= test_error_handling();
 

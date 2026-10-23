@@ -7,7 +7,7 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 3
-#define MP_VERSION_MINOR 0
+#define MP_VERSION_MINOR 1
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -72,6 +72,18 @@ MP_API uint32_t mp_version( void );
  * loaded. */
 MP_API int32_t mp_open( int32_t type, MP_CTX * ctx );
 MP_API int32_t mp_close( MP_CTX ctx );
+
+/* -- Digest -------------------------------------------------------- */
+
+/* Hashes data with the digest named by the dotted OID alg, such as SHA-256
+ * or GOST R 34.11-2012 (which needs the GOST engine, see mp_open), into md;
+ * MP_ERR_INVALID_ARG for an OID of no fixed-length digest OpenSSL can
+ * compute. */
+#define MP_DIGEST_MAX   64
+
+MP_API int32_t mp_digest( MP_CTX ctx, const char * alg,
+                          const uint8_t * data, size_t datalen,
+                          uint8_t md[ MP_DIGEST_MAX ], size_t * mdlen );
 
 /* -- Certificate --------------------------------------------------- */
 

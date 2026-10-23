@@ -117,6 +117,27 @@ static int test_context( void )
 
     printf( "\n[2] Context\n" );
     CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+
+    /* SHA-256 of "abc" (FIPS 180-2) by its OID */
+    static const uint8_t abc256[ 32 ] = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad };
+    uint8_t md[ MP_DIGEST_MAX ];
+    size_t mdlen = 0;
+    CHECK( mp_digest( ctx, "2.16.840.1.101.3.4.2.1", (const uint8_t *)"abc", 3, md, &mdlen ), "mp_digest(SHA-256)" );
+    EXPECT( mdlen == 32 && !memcmp( md, abc256, 32 ), 1, "SHA-256 of abc" );
+    EXPECT( mp_digest( ctx, "1.2.3.4", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG, "mp_digest(unknown OID)" );
+    EXPECT( mp_digest( ctx, "not an OID", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG, "mp_digest(not an OID)" );
+    EXPECT( mp_digest( ctx, "1.2.840.113549.1.1.11", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG,
+            "mp_digest(sha256WithRSAEncryption)" );
+    EXPECT( mp_digest( ctx, "2.16.840.1.101.3.4.2.11", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG,
+            "mp_digest(SHAKE128)" );
+    EXPECT( mp_digest( ctx, "1.2.840.113549.2.4", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG,
+            "mp_digest(MD4, no legacy provider)" );
+    /* SHA-1 of nothing */
+    CHECK( mp_digest( ctx, "1.3.14.3.2.26", NULL, 0, md, &mdlen ), "mp_digest(SHA-1, empty)" );
+    EXPECT( mdlen == 20 && !memcmp( md, "\xda\x39\xa3\xee\x5e\x6b\x4b\x0d\x32\x55\xbf\xef\x95\x60\x18\x90\xaf\xd8\x07\x09", 20 ),
+            1, "SHA-1 of nothing" );
     CHECK( mp_close( ctx ), "mp_close" );
     return 0;
 }
@@ -806,6 +827,23 @@ static int test_key( void )
         fprintf( stderr, "FAIL: could not generate GOST fixtures\n" );
         g_tests_failed++;
         return 1;
+    }
+
+    /* GOST R 34.11-2012 256 and 512 as the openssl CLI computes them */
+    {
+        const char * oids[] = { "1.2.643.7.1.1.2.2", "1.2.643.7.1.1.2.3" }, * names[] = { "md_gost12_256", "md_gost12_512" };
+        for( int i = 0; i < 2; i++ )
+        {
+            uint8_t md[ MP_DIGEST_MAX ], * cli;
+            size_t mdlen = 0, clilen = 0;
+            char cmd[ 128 ];
+            CHECK( mp_digest( ctx, oids[ i ], data, sizeof( data ), md, &mdlen ), "mp_digest(GOST)" );
+            snprintf( cmd, sizeof( cmd ), "openssl dgst -%s -binary -out dg data", names[ i ] );
+            EXPECT( write_file( GOST_DIR "/data", data, sizeof( data ) ) || gost_cli( cmd ) ||
+                    !( cli = read_file( GOST_DIR "/dg", &clilen ) ), 0, "openssl hashes the data" );
+            EXPECT( clilen == mdlen && !memcmp( cli, md, mdlen ), 1, "GOST R 34.11-2012 digest as openssl" );
+            free( cli );
+        }
     }
 
     CHECK( mp_key_sign( key, data, sizeof( data ), &signed_by, &siglen ), "mp_key_sign" );

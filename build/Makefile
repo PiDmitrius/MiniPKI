@@ -46,8 +46,10 @@ EXEEXT_windows-arm64  := .exe
 # MiniPKI source files
 MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c mp_key.c mp_cms.c
 
-# Object files for a target
+# Object files for a target: the static library takes the GOST engine its
+# user loads, the shared one carries OpenSSL and the GOST engine inside
 MP_OBJS = $(patsubst %.c,out/$(1)/%.o,$(MP_SRCS))
+MP_LIB_OBJS = $(subst out/$(1)/mp_ctx.o,out/$(1)/mp_ctx_builtin.o,$(call MP_OBJS,$(1)))
 
 # Platform link flags
 PLAT_LDFLAGS = -L$(OPENSSL_BASE)/$(1)/lib -lgost -lcrypto \
@@ -84,6 +86,13 @@ out/$(1)/%.o: $(ROOT)/src/%.c | out/$(1)
 		-I$(ROOT)/src \
 		-c $$< -o $$@
 
+out/$(1)/mp_ctx_builtin.o: $(ROOT)/src/mp_ctx.c | out/$(1)
+	zig cc $$(CFLAGS) -DMINIPKI_GOST_BUILTIN -target $$(ZIG_$(1)) \
+		-I$(ROOT)/include \
+		-I$(OPENSSL_BASE)/$(1)/include \
+		-I$(ROOT)/src \
+		-c $$< -o $$@
+
 out/$(1)/test_minipki.o: $(ROOT)/test/test_minipki.c | out/$(1)
 	zig cc $$(CFLAGS) -Wno-error -target $$(ZIG_$(1)) \
 		-I$(ROOT)/include \
@@ -95,7 +104,7 @@ $(call outstatic,$(1)): $(call MP_OBJS,$(1))
 	zig ar rcs $$@ $$^
 
 # Shared library
-$(call outlib,$(1)): $(call MP_OBJS,$(1))
+$(call outlib,$(1)): $(call MP_LIB_OBJS,$(1))
 	zig cc -target $$(ZIG_$(1)) -shared -s -o $$@ $$^ \
 		$(call PLAT_LDFLAGS,$(1)) \
 		$(if $(findstring windows,$(1)),-Wl$(,)--out-implib$(,)out/$(1)/minipki.lib,) \

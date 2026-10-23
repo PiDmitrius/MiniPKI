@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 
 ARG ZIG_VERSION=0.15.2
 ARG OPENSSL_VERSION=3.5.5
-ARG GOST_ENGINE_REF=master
+ARG GOST_ENGINE_REF=af2b7e6
 
 # Base tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,9 +26,8 @@ RUN ZIG_URL=$(curl -sL "https://pypi.org/pypi/ziglang/${ZIG_VERSION}/json" | \
     zig version
 
 # Clone gost-engine
-RUN git clone --depth 1 --branch ${GOST_ENGINE_REF} \
-    https://github.com/gost-engine/engine.git /tmp/gost-engine-src && \
-    cd /tmp/gost-engine-src && git submodule update --init
+RUN git clone https://github.com/gost-engine/engine.git /tmp/gost-engine-src && \
+    cd /tmp/gost-engine-src && git checkout -q ${GOST_ENGINE_REF} && git submodule update --init
 
 # Download OpenSSL source
 RUN curl -fSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" \

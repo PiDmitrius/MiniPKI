@@ -66,8 +66,10 @@ MP_API uint32_t mp_version( void );
 
 /* -- Context ------------------------------------------------------- */
 
-/* If MINIPKI_GOST_ENGINE names the GOST engine, it is loaded on the first
- * call; MP_ERR_OPENSSL if it cannot be loaded. */
+/* The GOST engine is loaded on the first call: the one built into a
+ * self-contained library (shared, with OpenSSL inside), else the one
+ * MINIPKI_GOST_ENGINE names, if it does; MP_ERR_OPENSSL if it cannot be
+ * loaded. */
 MP_API int32_t mp_open( int32_t type, MP_CTX * ctx );
 MP_API int32_t mp_close( MP_CTX ctx );
 
@@ -251,9 +253,9 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
 
 /* A signing key: a GOST R 34.10-2012 256-bit key on the CryptoPro-A
  * parameter set, generated or imported from its raw form, the 32-byte
- * little-endian private scalar as in its PKCS#8 (these need the GOST engine
- * named by MINIPKI_GOST_ENGINE); or an RSA or EC key imported from PKCS#8,
- * other PKCS#8 keys being MP_ERR_PARSE. */
+ * little-endian private scalar as in its PKCS#8 (these need the GOST engine,
+ * see mp_open); or an RSA or EC key imported from PKCS#8, other PKCS#8 keys
+ * being MP_ERR_PARSE. */
 #define MP_KEY_RAW_LEN  32
 
 MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );

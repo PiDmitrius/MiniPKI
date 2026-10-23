@@ -18,7 +18,7 @@ MP_API int32_t mp_cms_verify( MP_CTX ctx,
     int len;
 
     if( !ctx || !data || !datalen || datalen > INT_MAX ||
-        ( signer && ( !signerlen || signerlen > INT_MAX ) ) || !cms )
+        ( signer ? !signerlen || signerlen > INT_MAX : signerlen != 0 ) || !cms )
         return MP_ERR_INVALID_ARG;
 
     ERR_set_mark();

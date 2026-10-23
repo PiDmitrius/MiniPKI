@@ -15,6 +15,7 @@ static int32_t key_make( const uint8_t * raw, MP_KEY * key )
     struct MP_KEY_S * k;
     int ok;
 
+    ERR_set_mark();
     pctx = EVP_PKEY_CTX_new_id( NID_id_GostR3410_2012_256, NULL );
     ok = pctx != NULL;
     if( raw )
@@ -48,10 +49,12 @@ static int32_t key_make( const uint8_t * raw, MP_KEY * key )
         BN_bn2lebinpad( EC_KEY_get0_private_key( ec ),
                         k->raw, MP_KEY_RAW_LEN ) != MP_KEY_RAW_LEN )
     {
+        ERR_pop_to_mark();
         free( k );
         EVP_PKEY_free( pkey );
         return ok ? MP_ERR_UNEXPECTED : MP_ERR_OPENSSL;
     }
+    ERR_pop_to_mark();
 
     k->pkey = pkey;
     k->gost = 1;
@@ -90,6 +93,11 @@ MP_API int32_t mp_key_import_pkcs8( MP_CTX ctx,
     ERR_set_mark();
     p8 = d2i_PKCS8_PRIV_KEY_INFO( NULL, &p, (long)derlen );
     pkey = p8 && p == der + derlen ? EVP_PKCS82PKEY( p8 ) : NULL;
+    if( pkey && EVP_PKEY_get_base_id( pkey ) != EVP_PKEY_RSA && EVP_PKEY_get_base_id( pkey ) != EVP_PKEY_EC )
+    {
+        EVP_PKEY_free( pkey );
+        pkey = NULL;
+    }
     PKCS8_PRIV_KEY_INFO_free( p8 );
     ERR_pop_to_mark();
     if( !pkey )
@@ -139,7 +147,9 @@ MP_API int32_t mp_key_spki( MP_KEY key,
     if( !key->spki )
     {
         uint8_t * buf = NULL;
+        ERR_set_mark();
         int len = i2d_PUBKEY( key->pkey, &buf );
+        ERR_pop_to_mark();
         if( len <= 0 )
             return MP_ERR_OPENSSL;
         key->spki = buf;
@@ -166,6 +176,7 @@ MP_API int32_t mp_key_sign( MP_KEY key,
 
     md = EVP_PKEY_get_base_id( key->pkey ) == NID_id_GostR3410_2012_256
          ? EVP_get_digestbynid( NID_id_GostR3411_2012_256 ) : EVP_sha256();
+    ERR_set_mark();
     mctx = EVP_MD_CTX_new();
     ok = md && mctx &&
          EVP_DigestSignInit( mctx, NULL, md, NULL, key->pkey ) > 0 &&
@@ -173,6 +184,7 @@ MP_API int32_t mp_key_sign( MP_KEY key,
          ( buf = OPENSSL_malloc( len ) ) != NULL &&
          EVP_DigestSign( mctx, buf, &len, data, datalen ) > 0;
     EVP_MD_CTX_free( mctx );
+    ERR_pop_to_mark();
     if( !ok )
     {
         OPENSSL_free( buf );

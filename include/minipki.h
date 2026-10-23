@@ -194,9 +194,14 @@ MP_API int32_t mp_store_add_crl( MP_STORE store,
 #define MP_VERIFY_CRL_CHECK     0x1  /* every certificate needs its CRL */
 #define MP_VERIFY_CHECK_SS_SIG  0x2  /* check the signature of a self-signed
                                         trust anchor */
-#define MP_VERIFY_PARTIAL_CHAIN 0x4  /* a root need not be self-signed */
+#define MP_VERIFY_PARTIAL_CHAIN 0x4  /* a root need not be self-signed; any
+                                        root, the verified certificate
+                                        included, is trusted without checking
+                                        its signature */
 
-/* Replaces the verification flags of the store. */
+/* Replaces the verification flags of the store. MP_VERIFY_CRL_CHECK and
+ * MP_VERIFY_PARTIAL_CHAIN do not go together: the CRL of a root that is not
+ * self-signed cannot be verified. */
 MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags );
 
 /* -- Verification -------------------------------------------------- */
@@ -245,8 +250,8 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
 /* A signing key: a GOST R 34.10-2012 256-bit key on the CryptoPro-A
  * parameter set, generated or imported from its raw form, the 32-byte
  * little-endian private scalar as in its PKCS#8 (these need the GOST engine
- * named by MINIPKI_GOST_ENGINE); or any key OpenSSL reads from PKCS#8, such
- * as RSA or ECDSA. */
+ * named by MINIPKI_GOST_ENGINE); or an RSA or EC key imported from PKCS#8,
+ * other PKCS#8 keys being MP_ERR_PARSE. */
 #define MP_KEY_RAW_LEN  32
 
 MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );
@@ -258,7 +263,8 @@ MP_API int32_t mp_key_import_pkcs8( MP_CTX ctx,
                                     MP_KEY * key );
 MP_API int32_t mp_key_close( MP_KEY key );
 
-/* The raw form of a GOST key; MP_ERR_INVALID_ARG for other keys. */
+/* The raw form of a key generated or imported from its raw form;
+ * MP_ERR_INVALID_ARG for a key from PKCS#8. */
 MP_API int32_t mp_key_raw( MP_KEY key,
                            const uint8_t ** raw, size_t * rawlen );
 /* SubjectPublicKeyInfo DER */
@@ -296,6 +302,8 @@ MP_API int32_t mp_cms_sign( MP_KEY key,
                             size_t ncerts,
                             MP_CMS * cms );
 MP_API int32_t mp_cms_close( MP_CMS cms );
+/* The DER of a SignedData made by mp_cms_sign; MP_ERR_INVALID_ARG for one
+ * from mp_cms_verify. */
 MP_API int32_t mp_cms_der( MP_CMS cms,
                            const uint8_t ** der, size_t * derlen );
 

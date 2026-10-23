@@ -112,7 +112,8 @@ MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags )
     X509_VERIFY_PARAM * p;
 
     if( !store || ( flags & ~( MP_VERIFY_CRL_CHECK | MP_VERIFY_CHECK_SS_SIG |
-                               MP_VERIFY_PARTIAL_CHAIN ) ) )
+                               MP_VERIFY_PARTIAL_CHAIN ) ) ||
+        ( flags & MP_VERIFY_CRL_CHECK && flags & MP_VERIFY_PARTIAL_CHAIN ) )
         return MP_ERR_INVALID_ARG;
 
     if( flags & MP_VERIFY_CRL_CHECK )

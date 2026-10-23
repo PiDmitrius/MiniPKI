@@ -558,7 +558,37 @@ static int test_hardening( void )
            "mp_store_set_flags(partial chain)" );
     CHECK( mp_verify( store, leaf, &chain ), "mp_verify(partial chain)" );
     CHECK( mp_chain_close( chain ), "mp_chain_close" );
+    EXPECT( mp_store_set_flags( store, MP_VERIFY_PARTIAL_CHAIN | MP_VERIFY_CRL_CHECK ), MP_ERR_INVALID_ARG,
+            "mp_store_set_flags(partial chain with CRLs)" );
     CHECK( mp_store_close( store ), "mp_store_close" );
+
+    /* With CRLs every certificate needs its issuer's CRL, and a revoked one fails */
+    const char * crls[][ 2 ] = { { "root_crl.der", "inter_crl.der" }, { "root_crl.der", NULL },
+                                 { "root_crl.der", "inter_rev.der" } };
+    const int32_t want[] = { MP_OK, MP_ERR_NO_CRL, MP_ERR_REVOKED };
+    const char * what[] = { "mp_verify(CRLs)", "mp_verify(no CRL of the intermediate)", "mp_verify(revoked)" };
+    for( int i = 0; i < 3; i++ )
+    {
+        CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
+        d = fx( "root.der", &n );
+        CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root" );
+        free( d );
+        d = fx( "inter.der", &n );
+        CHECK( mp_store_add_intermediate( store, d, n ), "mp_store_add_intermediate" );
+        free( d );
+        for( int j = 0; j < 2 && crls[ i ][ j ]; j++ )
+        {
+            d = fx( crls[ i ][ j ], &n );
+            CHECK( mp_store_add_crl( store, d, n ), "mp_store_add_crl" );
+            free( d );
+        }
+        CHECK( mp_store_set_flags( store, MP_VERIFY_CRL_CHECK ), "mp_store_set_flags(CRLs)" );
+        int32_t rc = mp_verify( store, leaf, &chain );
+        EXPECT( rc, want[ i ], what[ i ] );
+        if( rc == MP_OK )
+            CHECK( mp_chain_close( chain ), "mp_chain_close" );
+        CHECK( mp_store_close( store ), "mp_store_close" );
+    }
 
     /* OCSP status is found with the response's own CertID hash (SHA-256) */
     d = fx( "ocsp256.der", &n );
@@ -867,6 +897,8 @@ static int test_pkcs8_keys( void )
     const uint8_t * spki, * sig, * der;
     size_t spkilen, siglen, derlen, n;
     char cmd[ 512 ];
+    uint8_t * other = NULL;
+    size_t otherlen = 0;
 
     printf( "\n[9] PKCS#8 keys\n" );
     CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
@@ -902,12 +934,37 @@ static int test_pkcs8_keys( void )
         EXPECT( write_file( GOST_DIR "/s.cms", der, derlen ) ||
                 system( "cd " GOST_DIR " && openssl cms -verify -noverify -binary -inform DER -in s.cms >/dev/null 2>&1" ), 0,
                 "openssl verifies the CMS" );
+        MP_CMS v = NULL;
+        CHECK( mp_cms_verify( ctx, der, derlen, cder, cderlen, &v ), "mp_cms_verify(given signer)" );
+        CHECK( mp_cms_close( v ), "mp_cms_close" );
+        EXPECT( mp_cms_verify( ctx, der, derlen, NULL, 1, &v ), MP_ERR_INVALID_ARG, "mp_cms_verify(no signer, a length)" );
+        EXPECT( mp_cms_sign( key, cder, cderlen, "not an OID", data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_PARSE,
+                "mp_cms_sign(bad content type)" );
+        if( other )  /* the certificate of the other key */
+            EXPECT( mp_cms_sign( key, other, otherlen, NULL, data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_OPENSSL,
+                    "mp_cms_sign(another key's certificate)" );
+        else if( ( other = malloc( cderlen ) ) )
+        {
+            memcpy( other, cder, cderlen );
+            otherlen = cderlen;
+        }
         CHECK( mp_cms_close( cms ), "mp_cms_close" );
         CHECK( mp_bag_close( bag ), "mp_bag_close" );
         free( cert );
         CHECK( mp_key_close( key ), "mp_key_close" );
     }
+    free( other );
     EXPECT( mp_key_import_pkcs8( ctx, data, sizeof( data ), &key ), MP_ERR_PARSE, "mp_key_import_pkcs8(garbage)" );
+    uint8_t * ed;
+    if( system( "cd " GOST_DIR " && openssl genpkey -algorithm ED25519 -outform DER -out ed.der " REDIR_NULL ) ||
+        !( ed = read_file( GOST_DIR "/ed.der", &n ) ) )
+    {
+        fprintf( stderr, "FAIL: could not make an Ed25519 key\n" );
+        g_tests_failed++;
+        return 1;
+    }
+    EXPECT( mp_key_import_pkcs8( ctx, ed, n, &key ), MP_ERR_PARSE, "mp_key_import_pkcs8(Ed25519)" );
+    free( ed );
     CHECK( mp_close( ctx ), "mp_close" );
     return 0;
 }

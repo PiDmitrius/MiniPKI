@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "minipki.h"
+#include <openssl/ocsp.h>
+#include <openssl/pem.h>
 
 /* Cross-platform temp path for generated test cert */
 #ifdef _WIN32
@@ -584,6 +586,20 @@ static int test_hardening( void )
         CHECK( mp_store_close( store ), "mp_store_close" );
     }
 
+    /* A delta CRL is told apart from a full one */
+    MP_CRL dcrl;
+    int32_t delta = -1;
+    const char * deltas[] = { "inter_delta.der", "inter_crl.der" };
+    for( int i = 0; i < 2; i++ )
+    {
+        d = fx( deltas[ i ], &n );
+        CHECK( mp_crl_parse( ctx, d, n, &dcrl ), "mp_crl_parse" );
+        free( d );
+        CHECK( mp_crl_is_delta( dcrl, &delta ), "mp_crl_is_delta" );
+        EXPECT( delta, i == 0, i == 0 ? "delta CRL" : "full CRL is not delta" );
+        CHECK( mp_crl_close( dcrl ), "mp_crl_close" );
+    }
+
     /* OCSP status is found with the response's own CertID hash (SHA-256) */
     d = fx( "ocsp256.der", &n );
     CHECK( mp_ocsp_response_parse( ctx, leaf, inter, d, n, &resp ), "mp_ocsp_response_parse" );
@@ -606,6 +622,59 @@ static int test_hardening( void )
     free( d );
     g_tests_passed++;
     CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
+
+    /* A response without a status for the certificate is not one about it */
+    MP_CERT leaf2;
+    d = fx( "leaf2.der", &n );
+    CHECK( mp_cert_parse( ctx, d, n, &leaf2 ), "mp_cert_parse(leaf2)" );
+    free( d );
+    d = fx( "ocsp256.der", &n );
+    EXPECT( mp_ocsp_response_parse( ctx, leaf2, inter, d, n, &resp ), MP_ERR_PARSE,
+            "mp_ocsp_response_parse(another certificate)" );
+    free( d );
+    CHECK( mp_cert_close( leaf2 ), "mp_cert_close" );
+
+    /* A stale status, signed by the issuer, does not verify */
+    {
+        FILE * f;
+        X509 * lx = NULL, * ix = NULL;
+        EVP_PKEY * ik = NULL;
+        if( ( f = fopen( FX_DIR "/leaf.pem", "r" ) ) ) { lx = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.pem", "r" ) ) ) { ix = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.key", "r" ) ) ) { ik = PEM_read_PrivateKey( f, NULL, NULL, NULL ); fclose( f ); }
+        OCSP_BASICRESP * bs = OCSP_BASICRESP_new();
+        OCSP_CERTID * id = lx && ix ? OCSP_cert_to_id( EVP_sha256(), lx, ix ) : NULL;
+        ASN1_TIME * t0 = X509_gmtime_adj( NULL, -2 * 86400 ), * t1 = X509_gmtime_adj( NULL, -86400 );
+        OCSP_RESPONSE * or = NULL;
+        uint8_t * der = NULL;
+        int derlen = -1;
+        if( bs && id && ik && t0 && t1 &&
+            OCSP_basic_add1_status( bs, id, V_OCSP_CERTSTATUS_GOOD, 0, NULL, t0, t1 ) &&
+            OCSP_basic_sign( bs, ix, ik, EVP_sha256(), NULL, 0 ) &&
+            ( or = OCSP_response_create( OCSP_RESPONSE_STATUS_SUCCESSFUL, bs ) ) )
+            derlen = i2d_OCSP_RESPONSE( or, &der );
+        if( derlen <= 0 )
+        {
+            fprintf( stderr, "FAIL: could not make a stale OCSP response\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( mp_ocsp_response_parse( ctx, leaf, inter, der, (size_t)derlen, &resp ), "mp_ocsp_response_parse(stale)" );
+        CHECK( mp_ocsp_status( resp, &status ), "mp_ocsp_status" );
+        CHECK( mp_ocsp_verified( resp, &verified ), "mp_ocsp_verified" );
+        EXPECT( status, MP_OCSP_GOOD, "stale OCSP status read" );
+        EXPECT( verified, 0, "stale OCSP response not verified" );
+        CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
+        OPENSSL_free( der );
+        OCSP_RESPONSE_free( or );
+        OCSP_BASICRESP_free( bs );
+        OCSP_CERTID_free( id );
+        ASN1_TIME_free( t0 );
+        ASN1_TIME_free( t1 );
+        X509_free( lx );
+        X509_free( ix );
+        EVP_PKEY_free( ik );
+    }
 
     CHECK( mp_cert_close( leaf ), "mp_cert_close" );
     CHECK( mp_cert_close( inter ), "mp_cert_close" );

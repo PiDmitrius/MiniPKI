@@ -202,10 +202,19 @@ MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
 
         if( status == V_OCSP_CERTSTATUS_REVOKED )
             r->revoke_reason = reason;
+
+        /* a stale or premature status is not a verified one (5 minutes of
+           clock skew) */
+        ERR_set_mark();
+        if( !OCSP_check_validity( thisupd, nextupd, 300, -1 ) )
+            r->verified = 0;
+        ERR_pop_to_mark();
     }
     else
     {
-        r->status = MP_OCSP_UNKNOWN;
+        /* the response says nothing about this certificate */
+        mp_ocsp_response_close( r );
+        return MP_ERR_PARSE;
     }
 
     /* producedAt from the basic response */

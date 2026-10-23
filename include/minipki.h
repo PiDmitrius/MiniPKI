@@ -26,7 +26,8 @@
 extern "C" {
 #endif
 
-/* Handles are not thread-safe: a handle, and handles obtained from it,
+/* An MP_CTX does not change after mp_open and may be shared by threads.
+ * Other handles are not thread-safe: a handle, and handles obtained from it,
  * must not be used by several threads at once. Distinct handles may be used
  * concurrently. Binary input (starting with a DER SEQUENCE) is parsed only
  * as DER and must be consumed exactly; other input is parsed as text (PEM,
@@ -166,10 +167,13 @@ MP_API int32_t mp_crl_issuer_name_der( MP_CRL crl,
 MP_API int32_t mp_crl_aki( MP_CRL crl,
                            const uint8_t ** out, size_t * outlen );
 
-/* Reports whether CRL has issuingDistributionPoint extension (RFC 5280 §5.2.5).
- * Presence implies scoped/partitioned/delta CRL — callers that don't parse IDP
- * should warn that revocation scope is not fully understood. */
+/* Reports whether CRL has issuingDistributionPoint extension (RFC 5280 §5.2.5):
+ * a scoped or partitioned CRL, which may not cover a certificate. */
 MP_API int32_t mp_crl_has_idp( MP_CRL crl, int32_t * has );
+/* Reports whether CRL is a delta CRL (deltaCRLIndicator, RFC 5280 §5.2.4),
+ * which lists only revocations since its base CRL. A certificate missing from
+ * a scoped or delta CRL is not shown unrevoked by it. */
+MP_API int32_t mp_crl_is_delta( MP_CRL crl, int32_t * delta );
 
 /* Verifies CRL signature against issuer's public key.
  * Returns MP_OK on valid signature, MP_ERR_VERIFY on bad signature,
@@ -221,14 +225,18 @@ MP_API int32_t mp_ocsp_request_close( MP_OCSP_REQ req );
 MP_API int32_t mp_ocsp_request_der( MP_OCSP_REQ req,
                                      const uint8_t ** der, size_t * derlen );
 
+/* MP_ERR_PARSE also when the response has no status for cert. */
 MP_API int32_t mp_ocsp_response_parse( MP_CTX ctx,
                                         MP_CERT cert, MP_CERT issuer,
                                         const uint8_t * data, size_t datalen,
                                         MP_OCSP_RESP * resp );
 MP_API int32_t mp_ocsp_response_close( MP_OCSP_RESP resp );
 
-/* Status and times come from the response's own fields whether or not its
- * signature verified: trust them only when mp_ocsp_verified reports 1. */
+/* Status and times come from the response's own fields whether or not it
+ * verified: trust them only when mp_ocsp_verified reports 1, which takes a
+ * valid signature by the issuer or its OCSP responder and a current status
+ * (thisUpdate not in the future, nextUpdate not passed, 5 minutes of clock
+ * skew). Only MP_OCSP_GOOD shows a certificate unrevoked. */
 MP_API int32_t mp_ocsp_status( MP_OCSP_RESP resp, int32_t * status );
 MP_API int32_t mp_ocsp_verified( MP_OCSP_RESP resp, int32_t * verified );
 MP_API int32_t mp_ocsp_this_update( MP_OCSP_RESP resp, int64_t * time );

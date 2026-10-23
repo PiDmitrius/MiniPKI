@@ -88,6 +88,7 @@ out/$(1)/%.o: $(ROOT)/src/%.c | out/$(1)
 out/$(1)/test_minipki.o: $(ROOT)/test/test_minipki.c | out/$(1)
 	zig cc $$(CFLAGS) -Wno-error -target $$(ZIG_$(1)) \
 		-I$(ROOT)/include \
+		-I$(OPENSSL_BASE)/$(1)/include \
 		-c $$< -o $$@
 
 # Static library
@@ -102,10 +103,10 @@ $(call outlib,$(1)): $(call MP_OBJS,$(1))
 		$(if $(findstring linux,$(1)),-Wl$(,)-soname$(,)$(PFX_$(1))minipki$(EXT_$(1)) -Wl$(,)--version-script$(,)$(ROOT)/build/minipki.map,) \
 		$(if $(findstring macos,$(1)),-Wl$(,)-install_name$(,)@rpath/$(PFX_$(1))minipki$(EXT_$(1)),)
 
-# Test binary (dynamic)
+# Test binary: MiniPKI dynamic, OpenSSL static for the fixtures it builds
 $(call outtest,$(1)): out/$(1)/test_minipki.o $(call outlib,$(1))
 	zig cc -target $$(ZIG_$(1)) -s -o $$@ out/$(1)/test_minipki.o \
-		-Lout/$(1) -lminipki \
+		-Lout/$(1) -lminipki $(call PLAT_LDFLAGS,$(1)) \
 		$(if $(findstring linux,$(1)),-Wl$(,)-rpath$(,)'$$$$ORIGIN',) \
 		$(if $(findstring macos,$(1)),-Wl$(,)-rpath$(,)'@executable_path' -Wl$(,)-headerpad$(,)0x1000,)
 endef

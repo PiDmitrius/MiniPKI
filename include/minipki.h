@@ -194,14 +194,8 @@ MP_API int32_t mp_store_add_crl( MP_STORE store,
 #define MP_VERIFY_CRL_CHECK     0x1  /* every certificate needs its CRL */
 #define MP_VERIFY_CHECK_SS_SIG  0x2  /* check the signature of a self-signed
                                         trust anchor */
-#define MP_VERIFY_PARTIAL_CHAIN 0x4  /* a root need not be self-signed; any
-                                        root, the verified certificate
-                                        included, is trusted without checking
-                                        its signature */
 
-/* Replaces the verification flags of the store. MP_VERIFY_CRL_CHECK and
- * MP_VERIFY_PARTIAL_CHAIN do not go together: the CRL of a root that is not
- * self-signed cannot be verified. */
+/* Replaces the verification flags of the store. */
 MP_API int32_t mp_store_set_flags( MP_STORE store, uint32_t flags );
 
 /* -- Verification -------------------------------------------------- */

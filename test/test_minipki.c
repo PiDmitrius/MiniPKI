@@ -547,19 +547,13 @@ static int test_hardening( void )
     CHECK( mp_chain_close( chain ), "mp_chain_close" );
     CHECK( mp_store_close( store ), "mp_store_close" );
 
-    /* A root that is not self-signed is a trust anchor only on request */
+    /* A root that is not self-signed is not a trust anchor */
     CHECK( mp_store_new( ctx, &store ), "mp_store_new" );
     d = fx( "inter.der", &n );
     CHECK( mp_store_add_root( store, d, n ), "mp_store_add_root(intermediate)" );
     free( d );
     EXPECT( mp_verify( store, leaf, &chain ), MP_ERR_NO_CHAIN,
             "mp_verify(intermediate root)" );
-    CHECK( mp_store_set_flags( store, MP_VERIFY_PARTIAL_CHAIN ),
-           "mp_store_set_flags(partial chain)" );
-    CHECK( mp_verify( store, leaf, &chain ), "mp_verify(partial chain)" );
-    CHECK( mp_chain_close( chain ), "mp_chain_close" );
-    EXPECT( mp_store_set_flags( store, MP_VERIFY_PARTIAL_CHAIN | MP_VERIFY_CRL_CHECK ), MP_ERR_INVALID_ARG,
-            "mp_store_set_flags(partial chain with CRLs)" );
     CHECK( mp_store_close( store ), "mp_store_close" );
 
     /* With CRLs every certificate needs its issuer's CRL, and a revoked one fails */

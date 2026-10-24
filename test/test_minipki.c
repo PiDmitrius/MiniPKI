@@ -117,6 +117,27 @@ static int test_context( void )
 
     printf( "\n[2] Context\n" );
     CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+
+    /* SHA-256 of "abc" (FIPS 180-2) by its OID */
+    static const uint8_t abc256[ 32 ] = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad };
+    uint8_t md[ MP_DIGEST_MAX ];
+    size_t mdlen = 0;
+    CHECK( mp_digest( ctx, "2.16.840.1.101.3.4.2.1", (const uint8_t *)"abc", 3, md, &mdlen ), "mp_digest(SHA-256)" );
+    EXPECT( mdlen == 32 && !memcmp( md, abc256, 32 ), 1, "SHA-256 of abc" );
+    EXPECT( mp_digest( ctx, "1.2.3.4", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG, "mp_digest(unknown OID)" );
+    EXPECT( mp_digest( ctx, "not an OID", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG, "mp_digest(not an OID)" );
+    EXPECT( mp_digest( ctx, "1.2.840.113549.1.1.11", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG,
+            "mp_digest(sha256WithRSAEncryption)" );
+    EXPECT( mp_digest( ctx, "2.16.840.1.101.3.4.2.11", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG,
+            "mp_digest(SHAKE128)" );
+    EXPECT( mp_digest( ctx, "1.2.840.113549.2.4", (const uint8_t *)"abc", 3, md, &mdlen ), MP_ERR_INVALID_ARG,
+            "mp_digest(MD4, no legacy provider)" );
+    /* SHA-1 of nothing */
+    CHECK( mp_digest( ctx, "1.3.14.3.2.26", NULL, 0, md, &mdlen ), "mp_digest(SHA-1, empty)" );
+    EXPECT( mdlen == 20 && !memcmp( md, "\xda\x39\xa3\xee\x5e\x6b\x4b\x0d\x32\x55\xbf\xef\x95\x60\x18\x90\xaf\xd8\x07\x09", 20 ),
+            1, "SHA-1 of nothing" );
     CHECK( mp_close( ctx ), "mp_close" );
     return 0;
 }
@@ -676,6 +697,61 @@ static int test_hardening( void )
         EVP_PKEY_free( ik );
     }
 
+    /* A response signed by an OCSP responder the issuer delegated to, with
+       id-kp-OCSPSigning, verifies; one by another certificate of the issuer
+       does not */
+    for( int eku = 1; eku >= 0; eku-- )
+    {
+        FILE * f;
+        X509 * lx = NULL, * ix = NULL, * rx = X509_new();
+        EVP_PKEY * ik = NULL, * rk = EVP_EC_gen( "P-256" );
+        if( ( f = fopen( FX_DIR "/leaf.pem", "r" ) ) ) { lx = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.pem", "r" ) ) ) { ix = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.key", "r" ) ) ) { ik = PEM_read_PrivateKey( f, NULL, NULL, NULL ); fclose( f ); }
+        X509V3_CTX v3;
+        X509_EXTENSION * ext = NULL;
+        OCSP_BASICRESP * bs = OCSP_BASICRESP_new();
+        OCSP_CERTID * id = lx && ix ? OCSP_cert_to_id( EVP_sha256(), lx, ix ) : NULL;
+        OCSP_RESPONSE * or = NULL;
+        uint8_t * der = NULL;
+        int derlen = -1;
+        if( rx && rk && ix && ik && bs && id )
+        {
+            X509V3_set_ctx( &v3, ix, rx, NULL, NULL, 0 );
+            ext = X509V3_EXT_conf_nid( NULL, &v3, eku ? NID_ext_key_usage : NID_key_usage,
+                                       eku ? "OCSPSigning" : "digitalSignature" );
+        }
+        if( ext && X509_set_version( rx, X509_VERSION_3 ) && ASN1_INTEGER_set( X509_get_serialNumber( rx ), 77 ) &&
+            X509_set_issuer_name( rx, X509_get_subject_name( ix ) ) && X509_NAME_add_entry_by_txt( X509_get_subject_name( rx ), "CN", MBSTRING_ASC,
+                                        (const unsigned char *)"OCSP responder", -1, -1, 0 ) &&
+            X509_gmtime_adj( X509_getm_notBefore( rx ), -60 ) && X509_gmtime_adj( X509_getm_notAfter( rx ), 86400 ) &&
+            X509_set_pubkey( rx, rk ) && X509_add_ext( rx, ext, -1 ) && X509_sign( rx, ik, EVP_sha256() ) &&
+            OCSP_basic_add1_status( bs, id, V_OCSP_CERTSTATUS_GOOD, 0, NULL, X509_gmtime_adj( NULL, 0 ), NULL ) &&
+            OCSP_basic_sign( bs, rx, rk, EVP_sha256(), NULL, 0 ) &&
+            ( or = OCSP_response_create( OCSP_RESPONSE_STATUS_SUCCESSFUL, bs ) ) )
+            derlen = i2d_OCSP_RESPONSE( or, &der );
+        if( derlen <= 0 )
+        {
+            fprintf( stderr, "FAIL: could not make a delegated OCSP response\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( mp_ocsp_response_parse( ctx, leaf, inter, der, (size_t)derlen, &resp ), "mp_ocsp_response_parse(delegated)" );
+        CHECK( mp_ocsp_verified( resp, &verified ), "mp_ocsp_verified" );
+        EXPECT( verified, eku, eku ? "a delegated OCSP responder verifies" : "a responder without OCSPSigning does not verify" );
+        CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
+        OPENSSL_free( der );
+        OCSP_RESPONSE_free( or );
+        OCSP_BASICRESP_free( bs );
+        OCSP_CERTID_free( id );
+        X509_EXTENSION_free( ext );
+        X509_free( rx );
+        EVP_PKEY_free( rk );
+        X509_free( lx );
+        X509_free( ix );
+        EVP_PKEY_free( ik );
+    }
+
     CHECK( mp_cert_close( leaf ), "mp_cert_close" );
     CHECK( mp_cert_close( inter ), "mp_cert_close" );
     CHECK( mp_cert_close( eleaf ), "mp_cert_close" );
@@ -698,23 +774,28 @@ static size_t der_len( const uint8_t * p )
     return h + n;
 }
 
-/* Replaces the signature of a DER certificate or CRL signed with a 256-bit
-   GOST key by key's signature of its to-be-signed part. */
+/* Replaces the signature of a DER certificate or CRL signed with a GOST key
+   by key's signature of its to-be-signed part, of siglen bytes. */
 #define GOST_SIG_LEN 64
 
-static int32_t gost_resign( MP_KEY key, uint8_t * der, size_t len )
+static int32_t gost_resign_len( MP_KEY key, uint8_t * der, size_t len, size_t want )
 {
     const uint8_t * tbs = der + 2 + ( der[ 1 ] & 0x80 ? der[ 1 ] & 0x7f : 0 ), * sig;
     size_t siglen;
     int32_t rc;
-    if( der_len( der ) != len || len < GOST_SIG_LEN )
+    if( der_len( der ) != len || len < want )
         return MP_ERR_INVALID_ARG;
     if( ( rc = mp_key_sign( key, tbs, der_len( tbs ), &sig, &siglen ) ) != MP_OK )
         return rc;
-    if( siglen != GOST_SIG_LEN )
+    if( siglen != want )
         return MP_ERR_UNEXPECTED;
-    memcpy( der + len - GOST_SIG_LEN, sig, GOST_SIG_LEN );
+    memcpy( der + len - want, sig, want );
     return MP_OK;
+}
+
+static int32_t gost_resign( MP_KEY key, uint8_t * der, size_t len )
+{
+    return gost_resign_len( key, der, len, GOST_SIG_LEN );
 }
 
 #define GOST_DIR "/tmp/test_minipki_gost"
@@ -808,6 +889,23 @@ static int test_key( void )
         return 1;
     }
 
+    /* GOST R 34.11-2012 256 and 512 as the openssl CLI computes them */
+    {
+        const char * oids[] = { "1.2.643.7.1.1.2.2", "1.2.643.7.1.1.2.3" }, * names[] = { "md_gost12_256", "md_gost12_512" };
+        for( int i = 0; i < 2; i++ )
+        {
+            uint8_t md[ MP_DIGEST_MAX ], * cli;
+            size_t mdlen = 0, clilen = 0;
+            char cmd[ 128 ];
+            CHECK( mp_digest( ctx, oids[ i ], data, sizeof( data ), md, &mdlen ), "mp_digest(GOST)" );
+            snprintf( cmd, sizeof( cmd ), "openssl dgst -%s -binary -out dg data", names[ i ] );
+            EXPECT( write_file( GOST_DIR "/data", data, sizeof( data ) ) || gost_cli( cmd ) ||
+                    !( cli = read_file( GOST_DIR "/dg", &clilen ) ), 0, "openssl hashes the data" );
+            EXPECT( clilen == mdlen && !memcmp( cli, md, mdlen ), 1, "GOST R 34.11-2012 digest as openssl" );
+            free( cli );
+        }
+    }
+
     CHECK( mp_key_sign( key, data, sizeof( data ), &signed_by, &siglen ), "mp_key_sign" );
     EXPECT( siglen, GOST_SIG_LEN, "GOST signature length" );
     memcpy( sig, signed_by, GOST_SIG_LEN );
@@ -826,6 +924,28 @@ static int test_key( void )
     sig[ 0 ] ^= 1;
     EXPECT( gost_verify_data( spki, spkilen, sig, data, sizeof( data ) ) != 0, 1,
             "openssl rejects tampered signature" );
+
+    /* A 512-bit key signs over GOST R 34.11-2012 512 */
+    {
+        MP_KEY k512 = NULL, b512 = NULL;
+        const uint8_t * r512, * p512, * s512;
+        size_t r512len, p512len, s512len;
+        CHECK( mp_key_generate_gost( ctx, 512, &k512 ), "mp_key_generate_gost(512)" );
+        CHECK( mp_key_raw( k512, &r512, &r512len ), "mp_key_raw(512)" );
+        EXPECT( r512len, MP_KEY_RAW_LEN_512, "512-bit raw length" );
+        CHECK( mp_key_import( ctx, r512, r512len, &b512 ), "mp_key_import(512)" );
+        CHECK( mp_key_spki( b512, &p512, &p512len ), "mp_key_spki(512)" );
+        CHECK( mp_key_sign( b512, data, sizeof( data ), &s512, &s512len ), "mp_key_sign(512)" );
+        EXPECT( s512len, 128, "512-bit signature length" );
+        EXPECT( write_file( GOST_DIR "/pub.der", p512, p512len ) || write_file( GOST_DIR "/sig", s512, s512len ) ||
+                write_file( GOST_DIR "/data", data, sizeof( data ) ) ||
+                gost_cli( "openssl dgst -md_gost12_512 -keyform DER -verify pub.der -signature sig data" ), 0,
+                "openssl verifies the 512-bit signature" );
+        EXPECT( mp_key_generate_gost( ctx, 384, &b512 ), MP_ERR_INVALID_ARG, "mp_key_generate_gost(384)" );
+        EXPECT( mp_key_import( ctx, r512, 48, &b512 ), MP_ERR_INVALID_ARG, "mp_key_import(48 bytes)" );
+        CHECK( mp_key_close( k512 ), "mp_key_close" );
+        CHECK( mp_key_close( b512 ), "mp_key_close" );
+    }
 
     /* The signature is the signatureValue of a certificate and a CRL */
     CHECK( gost_resign( back, ca_der, ca_len ), "re-sign certificate" );
@@ -932,6 +1052,83 @@ static int test_key( void )
     CHECK( mp_cms_close( cms ), "mp_cms_close" );
     free( ca_der );
 
+    /* A GOST time-stamp and PKCS#12 that openssl takes */
+    {
+        const uint8_t * out;
+        size_t outlen, tsalen, calen;
+        uint8_t * tsa = read_file( GOST_DIR "/tsa.der", &tsalen ), * q, * cader = read_file( GOST_DIR "/ca.der", &calen );
+        static const uint8_t sn[] = { 0x01, 0x02 };
+        size_t qlen;
+        if( !tsa || !cader || write_file( GOST_DIR "/d", (const uint8_t *)"stamp me", 8 ) ||
+            gost_cli( "openssl ts -query -data d -md_gost12_256 -cert -out q.tsq" ) ||
+            !( q = read_file( GOST_DIR "/q.tsq", &qlen ) ) )
+        {
+            fprintf( stderr, "FAIL: could not make a GOST time-stamp request\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        const uint8_t * chain[] = { cader };
+        const size_t chainlens[] = { calen };
+        CHECK( mp_key_tsp_reply( key, tsa, tsalen, chain, chainlens, 1, "1.2.3.4.1", NULL, sn, sizeof( sn ), q, qlen, &out, &outlen ),
+               "mp_key_tsp_reply(GOST)" );
+        EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) || write_file( GOST_DIR "/tsa.cer", tsa, tsalen ) ||
+                gost_cli( "openssl x509 -inform DER -in tsa.cer -out tsa.pem && "
+                          "openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile tsa.pem && "
+                          "test $(openssl ts -reply -in r.tsr -token_out | openssl pkcs7 -inform DER -print_certs | grep -c '^subject=') = 2" ), 0,
+                "openssl verifies the GOST time-stamp with its two certificates" );
+        CHECK( mp_key_pkcs12( key, cader, calen, chain, chainlens, 1, "pw", &out, &outlen ), "mp_key_pkcs12(GOST)" );
+        EXPECT( write_file( GOST_DIR "/k.p12", out, outlen ) ||
+                gost_cli( "openssl pkcs12 -in k.p12 -passin pass:pw -info -nodes 2>&1 | "
+                          "grep -q 'Shrouded Keybag: PBES2, PBKDF2, kuznyechik-ctr-acpkm-omac.*hmac-gost-3411-2012-512' && "
+                          "openssl pkcs12 -in k.p12 -passin pass:pw -info -noout 2>&1 | grep -q 'MAC: GOST R 34.11-2012 with 512 bit hash' && "
+                          "openssl pkcs12 -in k.p12 -passin pass:pw -nocerts -nodes -out k.pem && "
+                          "openssl pkey -in k.pem -pubout -outform DER -out k.pub && openssl x509 -inform DER -in ca.der -pubkey -noout | "
+                          "openssl pkey -pubin -outform DER | cmp -s - k.pub && "
+                          "test $(openssl pkcs12 -in k.p12 -passin pass:pw -nokeys | grep -c 'BEGIN CERTIFICATE') = 2" ), 0,
+                "openssl reads the TC26 PKCS#12, its key and its two certificates" );
+        EXPECT( mp_key_pkcs12( key, tsa, tsalen - 1, NULL, NULL, 0, "pw", &out, &outlen ), MP_ERR_PARSE,
+                "mp_key_pkcs12(truncated certificate)" );
+        free( q );
+        free( tsa );
+        free( cader );
+    }
+
+    /* A 512-bit key signs a certificate, a CRL and CMS */
+    {
+        MP_KEY k512 = NULL;
+        const uint8_t * r512;
+        size_t r512len, c512len, l512len;
+        uint8_t * c512, * l512;
+        CHECK( mp_key_generate_gost( ctx, 512, &k512 ), "mp_key_generate_gost(512)" );
+        CHECK( mp_key_raw( k512, &r512, &r512len ), "mp_key_raw(512)" );
+        if( system( "rm -rf " GOST_DIR " && mkdir " GOST_DIR ) ||
+            write_file( GOST_DIR "/raw", r512, r512len ) ||
+            system( "sh ../test/gen_gost.sh " GOST_DIR " " REDIR_NULL ) ||
+            !( c512 = read_file( GOST_DIR "/ca.der", &c512len ) ) ||
+            !( l512 = read_file( GOST_DIR "/crl.der", &l512len ) ) )
+        {
+            fprintf( stderr, "FAIL: could not generate 512-bit GOST fixtures\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( gost_resign_len( k512, c512, c512len, 128 ), "re-sign certificate(512)" );
+        CHECK( gost_resign_len( k512, l512, l512len, 128 ), "re-sign CRL(512)" );
+        EXPECT( gost_verify_cert( c512, c512len ), 0, "openssl verifies the 512-bit re-signed certificate" );
+        EXPECT( gost_verify_crl( l512, l512len ), 0, "openssl verifies the 512-bit re-signed CRL" );
+        CHECK( mp_cms_sign( k512, c512, c512len, NULL, (const uint8_t *)"hello", 5, NULL, NULL, 0, &cms ),
+               "mp_cms_sign(512)" );
+        CHECK( mp_cms_der( cms, &signed_der, &signed_len ), "mp_cms_der" );
+        CHECK( mp_cms_verify( ctx, signed_der, signed_len, c512, c512len, &back_cms ), "mp_cms_verify(512)" );
+        CHECK( mp_cms_close( back_cms ), "mp_cms_close" );
+        EXPECT( write_file( GOST_DIR "/s512.cms", signed_der, signed_len ) ||
+                gost_cli( "openssl cms -cmsout -print -inform DER -in s512.cms | grep -qE 'algorithm: (md_gost12_512|GOST R 34.11-2012 with 512 bit hash)'" ), 0,
+                "CMS of a 512-bit key over GOST R 34.11-2012 512" );
+        CHECK( mp_cms_close( cms ), "mp_cms_close" );
+        free( c512 );
+        free( l512 );
+        CHECK( mp_key_close( k512 ), "mp_key_close" );
+    }
+
     EXPECT( mp_key_import( ctx, raw, rawlen - 1, &back ), MP_ERR_INVALID_ARG,
             "mp_key_import(short)" );
     memset( bad, 0, sizeof( bad ) );
@@ -948,14 +1145,18 @@ static int test_key( void )
 #endif
 
 #ifndef _WIN32
-/* RSA and ECDSA keys from PKCS#8 sign data and CMS that the openssl CLI
-   verifies with SHA-256. */
+/* RSA and ECDSA keys from PKCS#8 sign data, over SHA-256 or a given digest,
+   and CMS that the openssl CLI verifies. */
 static int test_pkcs8_keys( void )
 {
     MP_CTX ctx = NULL;
     MP_KEY key = NULL;
     MP_CMS cms = NULL;
-    const char * algs[] = { "RSA -pkeyopt rsa_keygen_bits:2048", "EC -pkeyopt ec_paramgen_curve:P-256" };
+    const char * algs[] = { "RSA -pkeyopt rsa_keygen_bits:2048", "EC -pkeyopt ec_paramgen_curve:P-256",
+                            "EC -pkeyopt ec_paramgen_curve:P-384", "EC -pkeyopt ec_paramgen_curve:P-521" };
+    const char * mds[] = { "sha512", "sha256", "sha384", "sha512" };
+    const char * oids[] = { "2.16.840.1.101.3.4.2.3", "2.16.840.1.101.3.4.2.1",
+                            "2.16.840.1.101.3.4.2.2", "2.16.840.1.101.3.4.2.3" };
     static const uint8_t data[] = "MiniPKI PKCS#8 signing";
     const uint8_t * spki, * sig, * der;
     size_t spkilen, siglen, derlen, n;
@@ -965,11 +1166,12 @@ static int test_pkcs8_keys( void )
 
     printf( "\n[9] PKCS#8 keys\n" );
     CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
-    for( size_t i = 0; i < 2; i++ )
+    for( size_t i = 0; i < 4; i++ )
     {
         snprintf( cmd, sizeof( cmd ), "rm -rf " GOST_DIR " && mkdir " GOST_DIR " && cd " GOST_DIR " && "
                   "openssl genpkey -algorithm %s -out key.pem && openssl pkcs8 -topk8 -nocrypt -in key.pem -outform DER -out key.der && "
-                  "openssl req -new -x509 -key key.der -keyform DER -subj /CN=k -days 1 -out cert.pem %s", algs[ i ], REDIR_NULL );
+                  "openssl req -new -x509 -key key.der -keyform DER -subj /CN=k -days 1 -out cert.pem "
+                  "-addext extendedKeyUsage=critical,timeStamping %s", algs[ i ], REDIR_NULL );
         uint8_t * p8;
         if( system( cmd ) || !( p8 = read_file( GOST_DIR "/key.der", &n ) ) )
         {
@@ -986,6 +1188,12 @@ static int test_pkcs8_keys( void )
                 write_file( GOST_DIR "/data", data, sizeof( data ) ) ||
                 system( "cd " GOST_DIR " && openssl dgst -sha256 -keyform DER -verify pub.der -signature sig data >/dev/null 2>&1" ), 0,
                 "openssl verifies the SHA-256 signature" );
+        CHECK( mp_key_sign_digest( key, oids[ i ], data, sizeof( data ), &sig, &siglen ), "mp_key_sign_digest" );
+        snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl dgst -%s -keyform DER -verify pub.der -signature sig data >/dev/null 2>&1", mds[ i ] );
+        EXPECT( write_file( GOST_DIR "/sig", sig, siglen ) || system( cmd ), 0,
+                "openssl verifies the signature over the given digest" );
+        EXPECT( mp_key_sign_digest( key, "1.2.3.4", data, sizeof( data ), &sig, &siglen ), MP_ERR_INVALID_ARG,
+                "mp_key_sign_digest(unknown OID)" );
         uint8_t * cert = read_file( GOST_DIR "/cert.pem", &n );
         MP_BAG bag = NULL;
         const uint8_t * cder;
@@ -997,12 +1205,92 @@ static int test_pkcs8_keys( void )
         EXPECT( write_file( GOST_DIR "/s.cms", der, derlen ) ||
                 system( "cd " GOST_DIR " && openssl cms -verify -noverify -binary -inform DER -in s.cms >/dev/null 2>&1" ), 0,
                 "openssl verifies the CMS" );
+        snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl cms -inform DER -in s.cms -cmsout -print | "
+                  "grep -A1 'signatureAlgorithm:' | grep -q 'algorithm: %s'", i ? "id-ecPublicKey" : "rsaEncryption" );
+        EXPECT( system( cmd ), 0, "the CMS names its signature as CryptoPro CSP takes it" );
         MP_CMS v = NULL;
         CHECK( mp_cms_verify( ctx, der, derlen, cder, cderlen, &v ), "mp_cms_verify(given signer)" );
         CHECK( mp_cms_close( v ), "mp_cms_close" );
         EXPECT( mp_cms_verify( ctx, der, derlen, NULL, 1, &v ), MP_ERR_INVALID_ARG, "mp_cms_verify(no signer, a length)" );
         EXPECT( mp_cms_sign( key, cder, cderlen, "not an OID", data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_PARSE,
                 "mp_cms_sign(bad content type)" );
+        /* PKCS#12 and a time-stamp that openssl takes */
+        {
+            static const uint8_t sn[] = { 0x7f };
+            const uint8_t * out;
+            size_t outlen, qlen;
+            uint8_t * q;
+            CHECK( mp_key_pkcs12( key, cder, cderlen, NULL, NULL, 0, "pw", &out, &outlen ), "mp_key_pkcs12" );
+            EXPECT( write_file( GOST_DIR "/k.p12", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl pkcs12 -in k.p12 -passin pass:pw -info -nodes 2>&1 | "
+                            "grep -q 'Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256' && "
+                            "openssl pkcs12 -in k.p12 -passin pass:pw -info -noout 2>&1 | grep -q 'MAC: sha256' && "
+                            "openssl pkcs12 -in k.p12 -passin pass:pw -nocerts -nodes | openssl pkey -pubout -outform DER -out k.pub && "
+                            "cmp -s k.pub pub.der" ), 0,
+                    "openssl reads the PKCS#12 and its key" );
+            if( other )
+                EXPECT( mp_key_pkcs12( key, other, otherlen, NULL, NULL, 0, "pw", &out, &outlen ), MP_ERR_OPENSSL,
+                        "mp_key_pkcs12(another key's certificate)" );
+            if( system( "cd " GOST_DIR " && echo stamp > d && openssl ts -query -data d -sha256 -cert -out q.tsq" ) ||
+                !( q = read_file( GOST_DIR "/q.tsq", &qlen ) ) )
+            {
+                fprintf( stderr, "FAIL: could not make a time-stamp request\n" );
+                g_tests_failed++;
+                return 1;
+            }
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", oids[ i ], sn, 1, q, qlen, &out, &outlen ),
+                   "mp_key_tsp_reply(a given digest)" );
+            snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl ts -reply -in r.tsr -token_out | openssl cms -inform DER -cmsout -print | "
+                      "grep -A1 digestAlgorithm | grep -q 'algorithm: %s'", mds[ i ] );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) || system( cmd ), 0, "the time-stamp is signed over the given digest" );
+            snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl ts -reply -in r.tsr -token_out | openssl cms -inform DER -cmsout -print | "
+                      "grep -A1 'signatureAlgorithm:' | grep -q 'algorithm: %s'", i ? "id-ecPublicKey" : "rsaEncryption" );
+            EXPECT( system( cmd ), 0, "the time-stamp names its signature as CryptoPro CSP takes it" );
+            EXPECT( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", "1.2.3.4", sn, 1, q, qlen, &out, &outlen ),
+                    MP_ERR_INVALID_ARG, "mp_key_tsp_reply(unknown digest)" );
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, q, qlen, &out, &outlen ),
+                   "mp_key_tsp_reply" );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile cert.pem >/dev/null 2>&1 && "
+                            "openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Serial number: 0x7F'" ), 0,
+                    "openssl verifies the time-stamp" );
+            uint8_t * longer = malloc( qlen + 1 );
+            if( longer )
+            {
+                memcpy( longer, q, qlen );
+                longer[ qlen ] = 0xff;
+                CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, longer, qlen + 1, &out, &outlen ),
+                       "mp_key_tsp_reply(a byte after the request)" );
+                EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                        system( "cd " GOST_DIR " && openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Status: Rejected'" ), 0,
+                        "a request with a byte after it is rejected" );
+                free( longer );
+            }
+            free( q );
+            if( system( "cd " GOST_DIR " && openssl ts -query -data d -sha224 -cert -out q.tsq" ) ||
+                !( q = read_file( GOST_DIR "/q.tsq", &qlen ) ) )
+            {
+                fprintf( stderr, "FAIL: could not make a time-stamp request\n" );
+                g_tests_failed++;
+                return 1;
+            }
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, q, qlen, &out, &outlen ),
+                   "mp_key_tsp_reply(SHA-224)" );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile cert.pem >/dev/null 2>&1" ), 0,
+                    "a SHA-224 time-stamp" );
+            if( other )
+                EXPECT( mp_key_tsp_reply( key, other, otherlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, q, qlen, &out, &outlen ),
+                        MP_ERR_OPENSSL, "mp_key_tsp_reply(another key's certificate)" );
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, (const uint8_t *)"bad", 3, &out, &outlen ),
+                   "mp_key_tsp_reply(bad request)" );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Status: Rejected'" ), 0,
+                    "a bad request is rejected" );
+            EXPECT( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "not an OID", NULL, sn, 1, q, qlen, &out, &outlen ),
+                    MP_ERR_INVALID_ARG, "mp_key_tsp_reply(bad policy)" );
+            free( q );
+        }
         if( other )  /* the certificate of the other key */
             EXPECT( mp_cms_sign( key, other, otherlen, NULL, data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_OPENSSL,
                     "mp_cms_sign(another key's certificate)" );

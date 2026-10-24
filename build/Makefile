@@ -44,7 +44,7 @@ EXEEXT_windows-amd64  := .exe
 EXEEXT_windows-arm64  := .exe
 
 # MiniPKI source files
-MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c mp_key.c mp_cms.c
+MP_SRCS := mp_ctx.c mp_cert.c mp_crl.c mp_store.c mp_ocsp.c mp_key.c mp_cms.c mp_tsp.c
 
 # Object files for a target: the static library takes the GOST engine its
 # user loads, the shared one carries OpenSSL and the GOST engine inside

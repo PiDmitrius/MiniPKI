@@ -697,6 +697,61 @@ static int test_hardening( void )
         EVP_PKEY_free( ik );
     }
 
+    /* A response signed by an OCSP responder the issuer delegated to, with
+       id-kp-OCSPSigning, verifies; one by another certificate of the issuer
+       does not */
+    for( int eku = 1; eku >= 0; eku-- )
+    {
+        FILE * f;
+        X509 * lx = NULL, * ix = NULL, * rx = X509_new();
+        EVP_PKEY * ik = NULL, * rk = EVP_EC_gen( "P-256" );
+        if( ( f = fopen( FX_DIR "/leaf.pem", "r" ) ) ) { lx = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.pem", "r" ) ) ) { ix = PEM_read_X509( f, NULL, NULL, NULL ); fclose( f ); }
+        if( ( f = fopen( FX_DIR "/inter.key", "r" ) ) ) { ik = PEM_read_PrivateKey( f, NULL, NULL, NULL ); fclose( f ); }
+        X509V3_CTX v3;
+        X509_EXTENSION * ext = NULL;
+        OCSP_BASICRESP * bs = OCSP_BASICRESP_new();
+        OCSP_CERTID * id = lx && ix ? OCSP_cert_to_id( EVP_sha256(), lx, ix ) : NULL;
+        OCSP_RESPONSE * or = NULL;
+        uint8_t * der = NULL;
+        int derlen = -1;
+        if( rx && rk && ix && ik && bs && id )
+        {
+            X509V3_set_ctx( &v3, ix, rx, NULL, NULL, 0 );
+            ext = X509V3_EXT_conf_nid( NULL, &v3, eku ? NID_ext_key_usage : NID_key_usage,
+                                       eku ? "OCSPSigning" : "digitalSignature" );
+        }
+        if( ext && X509_set_version( rx, X509_VERSION_3 ) && ASN1_INTEGER_set( X509_get_serialNumber( rx ), 77 ) &&
+            X509_set_issuer_name( rx, X509_get_subject_name( ix ) ) && X509_NAME_add_entry_by_txt( X509_get_subject_name( rx ), "CN", MBSTRING_ASC,
+                                        (const unsigned char *)"OCSP responder", -1, -1, 0 ) &&
+            X509_gmtime_adj( X509_getm_notBefore( rx ), -60 ) && X509_gmtime_adj( X509_getm_notAfter( rx ), 86400 ) &&
+            X509_set_pubkey( rx, rk ) && X509_add_ext( rx, ext, -1 ) && X509_sign( rx, ik, EVP_sha256() ) &&
+            OCSP_basic_add1_status( bs, id, V_OCSP_CERTSTATUS_GOOD, 0, NULL, X509_gmtime_adj( NULL, 0 ), NULL ) &&
+            OCSP_basic_sign( bs, rx, rk, EVP_sha256(), NULL, 0 ) &&
+            ( or = OCSP_response_create( OCSP_RESPONSE_STATUS_SUCCESSFUL, bs ) ) )
+            derlen = i2d_OCSP_RESPONSE( or, &der );
+        if( derlen <= 0 )
+        {
+            fprintf( stderr, "FAIL: could not make a delegated OCSP response\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        CHECK( mp_ocsp_response_parse( ctx, leaf, inter, der, (size_t)derlen, &resp ), "mp_ocsp_response_parse(delegated)" );
+        CHECK( mp_ocsp_verified( resp, &verified ), "mp_ocsp_verified" );
+        EXPECT( verified, eku, eku ? "a delegated OCSP responder verifies" : "a responder without OCSPSigning does not verify" );
+        CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
+        OPENSSL_free( der );
+        OCSP_RESPONSE_free( or );
+        OCSP_BASICRESP_free( bs );
+        OCSP_CERTID_free( id );
+        X509_EXTENSION_free( ext );
+        X509_free( rx );
+        EVP_PKEY_free( rk );
+        X509_free( lx );
+        X509_free( ix );
+        EVP_PKEY_free( ik );
+    }
+
     CHECK( mp_cert_close( leaf ), "mp_cert_close" );
     CHECK( mp_cert_close( inter ), "mp_cert_close" );
     CHECK( mp_cert_close( eleaf ), "mp_cert_close" );

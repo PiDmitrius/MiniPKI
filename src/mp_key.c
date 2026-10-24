@@ -132,6 +132,8 @@ MP_API int32_t mp_key_close( MP_KEY key )
     EVP_PKEY_free( key->pkey );
     OPENSSL_free( key->spki );
     OPENSSL_free( key->sig );
+    OPENSSL_free( key->p12 );
+    OPENSSL_free( key->tsr );
     OPENSSL_cleanse( key->raw, sizeof( key->raw ) );
     free( key );
     return MP_OK;
@@ -210,13 +212,86 @@ MP_API int32_t mp_key_sign( MP_KEY key,
     if( !key || ( !data && datalen ) || !sig || !siglen )
         return MP_ERR_INVALID_ARG;
 
-    switch( EVP_PKEY_get_base_id( key->pkey ) )
-    {
-    case NID_id_GostR3410_2012_256: md = EVP_get_digestbynid( NID_id_GostR3411_2012_256 ); break;
-    case NID_id_GostR3410_2012_512: md = EVP_get_digestbynid( NID_id_GostR3411_2012_512 ); break;
-    default: md = EVP_sha256();
-    }
+    md = mp_key_md( key->pkey );
     return key_sign( key, md, data, datalen, sig, siglen );
+}
+
+const EVP_MD * mp_key_md( EVP_PKEY * pkey )
+{
+    switch( EVP_PKEY_get_base_id( pkey ) )
+    {
+    case NID_id_GostR3410_2012_256: return EVP_get_digestbynid( NID_id_GostR3411_2012_256 );
+    case NID_id_GostR3410_2012_512: return EVP_get_digestbynid( NID_id_GostR3411_2012_512 );
+    }
+    return EVP_sha256();
+}
+
+int32_t mp_x509_stack( const uint8_t * const * certs, const size_t * lens, size_t n,
+                       STACK_OF(X509) ** stack )
+{
+    size_t i;
+
+    if( n && ( !certs || !lens ) )
+        return MP_ERR_INVALID_ARG;
+    if( !( *stack = sk_X509_new_null() ) )
+        return MP_ERR_OPENSSL;
+    for( i = 0; i < n; i++ )
+    {
+        X509 * x = certs[ i ] && lens[ i ] && lens[ i ] <= INT_MAX ? mp_d2i_x509( certs[ i ], lens[ i ] ) : NULL;
+        if( !x || !sk_X509_push( *stack, x ) )
+        {
+            X509_free( x );
+            sk_X509_pop_free( *stack, X509_free );
+            *stack = NULL;
+            return x ? MP_ERR_OPENSSL : MP_ERR_PARSE;
+        }
+    }
+    return MP_OK;
+}
+
+MP_API int32_t mp_key_pkcs12( MP_KEY key,
+                              const uint8_t * cert, size_t certlen,
+                              const uint8_t * const * certs, const size_t * certlens,
+                              size_t ncerts, const char * password,
+                              const uint8_t ** der, size_t * derlen )
+{
+    X509 * x = NULL;
+    STACK_OF(X509) * ca = NULL;
+    PKCS12 * p12 = NULL;
+    uint8_t * buf = NULL;
+    int gost, pbe, len = 0;
+    int32_t rc;
+
+    if( !key || !cert || !certlen || certlen > INT_MAX || !password || !der || !derlen )
+        return MP_ERR_INVALID_ARG;
+
+    ERR_set_mark();
+    rc = MP_ERR_PARSE;
+    if( !( x = mp_d2i_x509( cert, certlen ) ) ||
+        ( rc = mp_x509_stack( certs, certlens, ncerts, &ca ) ) != MP_OK )
+        goto end;
+    rc = MP_ERR_OPENSSL;
+    gost = EVP_PKEY_get_base_id( key->pkey ) == NID_id_GostR3410_2012_256 ||
+           EVP_PKEY_get_base_id( key->pkey ) == NID_id_GostR3410_2012_512;
+    pbe = gost ? OBJ_txt2nid( "1.2.643.7.1.1.5.2.2" ) : NID_aes_256_cbc;
+    if( !X509_check_private_key( x, key->pkey ) || pbe == NID_undef ||
+        !( p12 = PKCS12_create( password, NULL, key->pkey, x, ca, pbe, pbe, 0, -1, 0 ) ) ||
+        !PKCS12_set_mac( p12, password, -1, NULL, 0, PKCS12_DEFAULT_ITER,
+                         gost ? EVP_get_digestbynid( NID_id_GostR3411_2012_512 ) : EVP_sha256() ) ||
+        ( len = i2d_PKCS12( p12, &buf ) ) <= 0 )
+        goto end;
+    OPENSSL_free( key->p12 );
+    key->p12 = buf;
+    *der = buf;
+    *derlen = (size_t)len;
+    rc = MP_OK;
+
+end:
+    ERR_pop_to_mark();
+    PKCS12_free( p12 );
+    sk_X509_pop_free( ca, X509_free );
+    X509_free( x );
+    return rc;
 }
 
 MP_API int32_t mp_key_sign_digest( MP_KEY key, const char * alg,

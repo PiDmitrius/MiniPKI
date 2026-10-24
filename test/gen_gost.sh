@@ -1,8 +1,9 @@
 # GOST fixtures: gen_gost.sh <dir>, with <dir>/raw the 32 or 64-byte
 # little-endian private scalar of a 256 or 512-bit key. Writes <dir>/eng.cnf, an openssl config on the engine named
 # by MINIPKI_GOST_ENGINE (the CLI GOST provider cannot verify X.509
-# signatures), the self-signed certificate ca.der, its CRL crl.der and
-# intent.cms, a CMS SignedData of "tuc revoke 01" by its key.
+# signatures), the self-signed certificate ca.der, its CRL crl.der,
+# intent.cms, a CMS SignedData of "tuc revoke 01" by its key, and tsa.der, a
+# self-signed time-stamping certificate of the key.
 set -e
 D="$1"; cd "$D"
 printf 'openssl_conf=i\n[i]\nengines=e\n[e]\ngost=g\n[g]\ndynamic_path=%s\ndefault_algorithms=ALL\n' \
@@ -26,6 +27,8 @@ openssl req -x509 -key key.pem -md_gost12_$B -subj /CN=GOST -days 30 -out ca.pem
 printf '[ca]\ndefault_ca=c\n[c]\ndatabase=db/index.txt\ncrlnumber=db/crlnumber\ncertificate=ca.pem\nprivate_key=key.pem\ndefault_md=md_gost12_%s\ndefault_crl_days=30\n' $B > ca.cnf
 openssl ca -config ca.cnf -gencrl -out crl.pem
 openssl x509 -in ca.pem -outform DER -out ca.der
+openssl req -x509 -key key.pem -md_gost12_$B -subj /CN=TSA -days 30 -outform DER -out tsa.der \
+    -addext extendedKeyUsage=critical,timeStamping -addext keyUsage=critical,digitalSignature
 openssl crl -in crl.pem -outform DER -out crl.der
 printf 'tuc revoke 01' > intent
 openssl cms -sign -signer ca.pem -inkey key.pem -binary -nodetach -outform DER -in intent -out intent.cms

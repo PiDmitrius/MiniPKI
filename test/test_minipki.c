@@ -997,6 +997,47 @@ static int test_key( void )
     CHECK( mp_cms_close( cms ), "mp_cms_close" );
     free( ca_der );
 
+    /* A GOST time-stamp and PKCS#12 that openssl takes */
+    {
+        const uint8_t * out;
+        size_t outlen, tsalen, calen;
+        uint8_t * tsa = read_file( GOST_DIR "/tsa.der", &tsalen ), * q, * cader = read_file( GOST_DIR "/ca.der", &calen );
+        static const uint8_t sn[] = { 0x01, 0x02 };
+        size_t qlen;
+        if( !tsa || !cader || write_file( GOST_DIR "/d", (const uint8_t *)"stamp me", 8 ) ||
+            gost_cli( "openssl ts -query -data d -md_gost12_256 -cert -out q.tsq" ) ||
+            !( q = read_file( GOST_DIR "/q.tsq", &qlen ) ) )
+        {
+            fprintf( stderr, "FAIL: could not make a GOST time-stamp request\n" );
+            g_tests_failed++;
+            return 1;
+        }
+        const uint8_t * chain[] = { cader };
+        const size_t chainlens[] = { calen };
+        CHECK( mp_key_tsp_reply( key, tsa, tsalen, chain, chainlens, 1, "1.2.3.4.1", sn, sizeof( sn ), q, qlen, &out, &outlen ),
+               "mp_key_tsp_reply(GOST)" );
+        EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) || write_file( GOST_DIR "/tsa.cer", tsa, tsalen ) ||
+                gost_cli( "openssl x509 -inform DER -in tsa.cer -out tsa.pem && "
+                          "openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile tsa.pem && "
+                          "test $(openssl ts -reply -in r.tsr -token_out | openssl pkcs7 -inform DER -print_certs | grep -c '^subject=') = 2" ), 0,
+                "openssl verifies the GOST time-stamp with its two certificates" );
+        CHECK( mp_key_pkcs12( key, cader, calen, chain, chainlens, 1, "pw", &out, &outlen ), "mp_key_pkcs12(GOST)" );
+        EXPECT( write_file( GOST_DIR "/k.p12", out, outlen ) ||
+                gost_cli( "openssl pkcs12 -in k.p12 -passin pass:pw -info -nodes 2>&1 | "
+                          "grep -q 'Shrouded Keybag: PBES2, PBKDF2, kuznyechik-ctr-acpkm-omac.*hmac-gost-3411-2012-512' && "
+                          "openssl pkcs12 -in k.p12 -passin pass:pw -info -noout 2>&1 | grep -q 'MAC: GOST R 34.11-2012 with 512 bit hash' && "
+                          "openssl pkcs12 -in k.p12 -passin pass:pw -nocerts -nodes -out k.pem && "
+                          "openssl pkey -in k.pem -pubout -outform DER -out k.pub && openssl x509 -inform DER -in ca.der -pubkey -noout | "
+                          "openssl pkey -pubin -outform DER | cmp -s - k.pub && "
+                          "test $(openssl pkcs12 -in k.p12 -passin pass:pw -nokeys | grep -c 'BEGIN CERTIFICATE') = 2" ), 0,
+                "openssl reads the TC26 PKCS#12, its key and its two certificates" );
+        EXPECT( mp_key_pkcs12( key, tsa, tsalen - 1, NULL, NULL, 0, "pw", &out, &outlen ), MP_ERR_PARSE,
+                "mp_key_pkcs12(truncated certificate)" );
+        free( q );
+        free( tsa );
+        free( cader );
+    }
+
     /* A 512-bit key signs a certificate, a CRL and CMS */
     {
         MP_KEY k512 = NULL;
@@ -1074,7 +1115,8 @@ static int test_pkcs8_keys( void )
     {
         snprintf( cmd, sizeof( cmd ), "rm -rf " GOST_DIR " && mkdir " GOST_DIR " && cd " GOST_DIR " && "
                   "openssl genpkey -algorithm %s -out key.pem && openssl pkcs8 -topk8 -nocrypt -in key.pem -outform DER -out key.der && "
-                  "openssl req -new -x509 -key key.der -keyform DER -subj /CN=k -days 1 -out cert.pem %s", algs[ i ], REDIR_NULL );
+                  "openssl req -new -x509 -key key.der -keyform DER -subj /CN=k -days 1 -out cert.pem "
+                  "-addext extendedKeyUsage=critical,timeStamping %s", algs[ i ], REDIR_NULL );
         uint8_t * p8;
         if( system( cmd ) || !( p8 = read_file( GOST_DIR "/key.der", &n ) ) )
         {
@@ -1114,6 +1156,73 @@ static int test_pkcs8_keys( void )
         EXPECT( mp_cms_verify( ctx, der, derlen, NULL, 1, &v ), MP_ERR_INVALID_ARG, "mp_cms_verify(no signer, a length)" );
         EXPECT( mp_cms_sign( key, cder, cderlen, "not an OID", data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_PARSE,
                 "mp_cms_sign(bad content type)" );
+        /* PKCS#12 and a time-stamp that openssl takes */
+        {
+            static const uint8_t sn[] = { 0x7f };
+            const uint8_t * out;
+            size_t outlen, qlen;
+            uint8_t * q;
+            CHECK( mp_key_pkcs12( key, cder, cderlen, NULL, NULL, 0, "pw", &out, &outlen ), "mp_key_pkcs12" );
+            EXPECT( write_file( GOST_DIR "/k.p12", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl pkcs12 -in k.p12 -passin pass:pw -info -nodes 2>&1 | "
+                            "grep -q 'Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 2048, PRF hmacWithSHA256' && "
+                            "openssl pkcs12 -in k.p12 -passin pass:pw -info -noout 2>&1 | grep -q 'MAC: sha256' && "
+                            "openssl pkcs12 -in k.p12 -passin pass:pw -nocerts -nodes | openssl pkey -pubout -outform DER -out k.pub && "
+                            "cmp -s k.pub pub.der" ), 0,
+                    "openssl reads the PKCS#12 and its key" );
+            if( other )
+                EXPECT( mp_key_pkcs12( key, other, otherlen, NULL, NULL, 0, "pw", &out, &outlen ), MP_ERR_OPENSSL,
+                        "mp_key_pkcs12(another key's certificate)" );
+            if( system( "cd " GOST_DIR " && echo stamp > d && openssl ts -query -data d -sha256 -cert -out q.tsq" ) ||
+                !( q = read_file( GOST_DIR "/q.tsq", &qlen ) ) )
+            {
+                fprintf( stderr, "FAIL: could not make a time-stamp request\n" );
+                g_tests_failed++;
+                return 1;
+            }
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, q, qlen, &out, &outlen ),
+                   "mp_key_tsp_reply" );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile cert.pem >/dev/null 2>&1 && "
+                            "openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Serial number: 0x7F'" ), 0,
+                    "openssl verifies the time-stamp" );
+            uint8_t * longer = malloc( qlen + 1 );
+            if( longer )
+            {
+                memcpy( longer, q, qlen );
+                longer[ qlen ] = 0xff;
+                CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, longer, qlen + 1, &out, &outlen ),
+                       "mp_key_tsp_reply(a byte after the request)" );
+                EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                        system( "cd " GOST_DIR " && openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Status: Rejected'" ), 0,
+                        "a request with a byte after it is rejected" );
+                free( longer );
+            }
+            free( q );
+            if( system( "cd " GOST_DIR " && openssl ts -query -data d -sha224 -cert -out q.tsq" ) ||
+                !( q = read_file( GOST_DIR "/q.tsq", &qlen ) ) )
+            {
+                fprintf( stderr, "FAIL: could not make a time-stamp request\n" );
+                g_tests_failed++;
+                return 1;
+            }
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, q, qlen, &out, &outlen ),
+                   "mp_key_tsp_reply(SHA-224)" );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile cert.pem >/dev/null 2>&1" ), 0,
+                    "a SHA-224 time-stamp" );
+            if( other )
+                EXPECT( mp_key_tsp_reply( key, other, otherlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, q, qlen, &out, &outlen ),
+                        MP_ERR_OPENSSL, "mp_key_tsp_reply(another key's certificate)" );
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, (const uint8_t *)"bad", 3, &out, &outlen ),
+                   "mp_key_tsp_reply(bad request)" );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
+                    system( "cd " GOST_DIR " && openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Status: Rejected'" ), 0,
+                    "a bad request is rejected" );
+            EXPECT( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "not an OID", sn, 1, q, qlen, &out, &outlen ),
+                    MP_ERR_INVALID_ARG, "mp_key_tsp_reply(bad policy)" );
+            free( q );
+        }
         if( other )  /* the certificate of the other key */
             EXPECT( mp_cms_sign( key, other, otherlen, NULL, data, sizeof( data ), NULL, NULL, 0, &v ), MP_ERR_OPENSSL,
                     "mp_cms_sign(another key's certificate)" );

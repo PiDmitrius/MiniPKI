@@ -307,6 +307,39 @@ MP_API int32_t mp_key_sign_digest( MP_KEY key, const char * alg,
                                    const uint8_t * data, size_t datalen,
                                    const uint8_t ** sig, size_t * siglen );
 
+/* A PKCS#12 of key with its certificate cert and the certificates certs,
+ * under password: for a GOST key as TC26 sets it and CryptoPro CSP imports
+ * it, PBES2 with Kuznyechik-CTR-ACPKM-OMAC and PBKDF2 over HMAC GOST R
+ * 34.11-2012 512 and a MAC over GOST R 34.11-2012 512; for others PBES2
+ * with AES-256-CBC and PBKDF2 over HMAC SHA-256 and a MAC over SHA-256.
+ * Valid until the next PKCS#12 of the key; MP_ERR_PARSE for a certificate
+ * that does not parse, MP_ERR_OPENSSL for cert not of the key. */
+MP_API int32_t mp_key_pkcs12( MP_KEY key,
+                              const uint8_t * cert, size_t certlen,
+                              const uint8_t * const * certs, const size_t * certlens,
+                              size_t ncerts, const char * password,
+                              const uint8_t ** der, size_t * derlen );
+
+/* -- Time stamps --------------------------------------------------- */
+
+/* A time-stamp response (RFC 3161) to the DER request of reqlen bytes by
+ * key, whose certificate signer has the time-stamping key purpose, with
+ * the certificates certs, under the policy of the dotted OID policy, with
+ * the serial number of the big-endian serial and the current time to a
+ * second, accurate to a second, signed over the hash mp_key_sign takes and
+ * naming the signer certificate by that hash. A request of bad form, with
+ * a hash mp_digest does not take, or for another policy gets a rejection.
+ * Valid until the next response of the key; MP_ERR_PARSE for a certificate
+ * that does not parse, MP_ERR_OPENSSL for signer not of the key or a
+ * response OpenSSL fails to make. */
+MP_API int32_t mp_key_tsp_reply( MP_KEY key,
+                                 const uint8_t * signer, size_t signerlen,
+                                 const uint8_t * const * certs, const size_t * certlens,
+                                 size_t ncerts, const char * policy,
+                                 const uint8_t * serial, size_t seriallen,
+                                 const uint8_t * req, size_t reqlen,
+                                 const uint8_t ** der, size_t * derlen );
+
 /* -- CMS ----------------------------------------------------------- */
 
 /* Parses a DER CMS SignedData with its content and exactly one signer, and

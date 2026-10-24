@@ -1014,7 +1014,7 @@ static int test_key( void )
         }
         const uint8_t * chain[] = { cader };
         const size_t chainlens[] = { calen };
-        CHECK( mp_key_tsp_reply( key, tsa, tsalen, chain, chainlens, 1, "1.2.3.4.1", sn, sizeof( sn ), q, qlen, &out, &outlen ),
+        CHECK( mp_key_tsp_reply( key, tsa, tsalen, chain, chainlens, 1, "1.2.3.4.1", NULL, sn, sizeof( sn ), q, qlen, &out, &outlen ),
                "mp_key_tsp_reply(GOST)" );
         EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) || write_file( GOST_DIR "/tsa.cer", tsa, tsalen ) ||
                 gost_cli( "openssl x509 -inform DER -in tsa.cer -out tsa.pem && "
@@ -1150,6 +1150,9 @@ static int test_pkcs8_keys( void )
         EXPECT( write_file( GOST_DIR "/s.cms", der, derlen ) ||
                 system( "cd " GOST_DIR " && openssl cms -verify -noverify -binary -inform DER -in s.cms >/dev/null 2>&1" ), 0,
                 "openssl verifies the CMS" );
+        snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl cms -inform DER -in s.cms -cmsout -print | "
+                  "grep -A1 'signatureAlgorithm:' | grep -q 'algorithm: %s'", i ? "id-ecPublicKey" : "rsaEncryption" );
+        EXPECT( system( cmd ), 0, "the CMS names its signature as CryptoPro CSP takes it" );
         MP_CMS v = NULL;
         CHECK( mp_cms_verify( ctx, der, derlen, cder, cderlen, &v ), "mp_cms_verify(given signer)" );
         CHECK( mp_cms_close( v ), "mp_cms_close" );
@@ -1180,7 +1183,17 @@ static int test_pkcs8_keys( void )
                 g_tests_failed++;
                 return 1;
             }
-            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, q, qlen, &out, &outlen ),
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", oids[ i ], sn, 1, q, qlen, &out, &outlen ),
+                   "mp_key_tsp_reply(a given digest)" );
+            snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl ts -reply -in r.tsr -token_out | openssl cms -inform DER -cmsout -print | "
+                      "grep -A1 digestAlgorithm | grep -q 'algorithm: %s'", mds[ i ] );
+            EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) || system( cmd ), 0, "the time-stamp is signed over the given digest" );
+            snprintf( cmd, sizeof( cmd ), "cd " GOST_DIR " && openssl ts -reply -in r.tsr -token_out | openssl cms -inform DER -cmsout -print | "
+                      "grep -A1 'signatureAlgorithm:' | grep -q 'algorithm: %s'", i ? "id-ecPublicKey" : "rsaEncryption" );
+            EXPECT( system( cmd ), 0, "the time-stamp names its signature as CryptoPro CSP takes it" );
+            EXPECT( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", "1.2.3.4", sn, 1, q, qlen, &out, &outlen ),
+                    MP_ERR_INVALID_ARG, "mp_key_tsp_reply(unknown digest)" );
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, q, qlen, &out, &outlen ),
                    "mp_key_tsp_reply" );
             EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
                     system( "cd " GOST_DIR " && openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile cert.pem >/dev/null 2>&1 && "
@@ -1191,7 +1204,7 @@ static int test_pkcs8_keys( void )
             {
                 memcpy( longer, q, qlen );
                 longer[ qlen ] = 0xff;
-                CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, longer, qlen + 1, &out, &outlen ),
+                CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, longer, qlen + 1, &out, &outlen ),
                        "mp_key_tsp_reply(a byte after the request)" );
                 EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
                         system( "cd " GOST_DIR " && openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Status: Rejected'" ), 0,
@@ -1206,20 +1219,20 @@ static int test_pkcs8_keys( void )
                 g_tests_failed++;
                 return 1;
             }
-            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, q, qlen, &out, &outlen ),
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, q, qlen, &out, &outlen ),
                    "mp_key_tsp_reply(SHA-224)" );
             EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
                     system( "cd " GOST_DIR " && openssl ts -verify -in r.tsr -queryfile q.tsq -CAfile cert.pem >/dev/null 2>&1" ), 0,
                     "a SHA-224 time-stamp" );
             if( other )
-                EXPECT( mp_key_tsp_reply( key, other, otherlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, q, qlen, &out, &outlen ),
+                EXPECT( mp_key_tsp_reply( key, other, otherlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, q, qlen, &out, &outlen ),
                         MP_ERR_OPENSSL, "mp_key_tsp_reply(another key's certificate)" );
-            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", sn, 1, (const uint8_t *)"bad", 3, &out, &outlen ),
+            CHECK( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "1.2.3.4.1", NULL, sn, 1, (const uint8_t *)"bad", 3, &out, &outlen ),
                    "mp_key_tsp_reply(bad request)" );
             EXPECT( write_file( GOST_DIR "/r.tsr", out, outlen ) ||
                     system( "cd " GOST_DIR " && openssl ts -reply -in r.tsr -text 2>/dev/null | grep -q 'Status: Rejected'" ), 0,
                     "a bad request is rejected" );
-            EXPECT( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "not an OID", sn, 1, q, qlen, &out, &outlen ),
+            EXPECT( mp_key_tsp_reply( key, cder, cderlen, NULL, NULL, 0, "not an OID", NULL, sn, 1, q, qlen, &out, &outlen ),
                     MP_ERR_INVALID_ARG, "mp_key_tsp_reply(bad policy)" );
             free( q );
         }

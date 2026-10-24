@@ -226,6 +226,11 @@ const EVP_MD * mp_key_md( EVP_PKEY * pkey )
     return EVP_sha256();
 }
 
+void mp_ec_sig_alg( X509_ALGOR * alg )
+{
+    X509_ALGOR_set0( alg, OBJ_nid2obj( NID_X9_62_id_ecPublicKey ), V_ASN1_UNDEF, NULL );
+}
+
 int32_t mp_x509_stack( const uint8_t * const * certs, const size_t * lens, size_t n,
                        STACK_OF(X509) ** stack )
 {

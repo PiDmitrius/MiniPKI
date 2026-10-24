@@ -11,7 +11,7 @@ static ASN1_INTEGER * serial_cb( TS_RESP_CTX * ctx, void * data )
 MP_API int32_t mp_key_tsp_reply( MP_KEY key,
                                  const uint8_t * signer, size_t signerlen,
                                  const uint8_t * const * certs, const size_t * certlens,
-                                 size_t ncerts, const char * policy,
+                                 size_t ncerts, const char * policy, const char * digest,
                                  const uint8_t * serial, size_t seriallen,
                                  const uint8_t * req, size_t reqlen,
                                  const uint8_t ** der, size_t * derlen )
@@ -44,7 +44,7 @@ MP_API int32_t mp_key_tsp_reply( MP_KEY key,
         ( rc = mp_x509_stack( certs, certlens, ncerts, &chain ) ) != MP_OK )
         goto end;
     rc = MP_ERR_INVALID_ARG;
-    if( !( pol = OBJ_txt2obj( policy, 1 ) ) )
+    if( !( pol = OBJ_txt2obj( policy, 1 ) ) || !( md = digest ? mp_md( digest ) : mp_key_md( key->pkey ) ) )
         goto end;
     rc = MP_ERR_OPENSSL;
     if( !X509_check_private_key( x, key->pkey ) )
@@ -64,7 +64,6 @@ MP_API int32_t mp_key_tsp_reply( MP_KEY key,
         if( OBJ_obj2txt( alg, sizeof( alg ), obj, 1 ) > 0 )
             m = mp_md( alg );
     }
-    md = mp_key_md( key->pkey );
     if( !( bn = BN_bin2bn( serial, (int)seriallen, NULL ) ) || !( sn = BN_to_ASN1_INTEGER( bn, NULL ) ) ||
         !( ctx = TS_RESP_CTX_new() ) ||
         !TS_RESP_CTX_set_signer_cert( ctx, x ) || !TS_RESP_CTX_set_signer_key( ctx, key->pkey ) ||
@@ -81,9 +80,17 @@ MP_API int32_t mp_key_tsp_reply( MP_KEY key,
     /* OpenSSL rejects a request with a failure info, and fails itself
        without one */
     si = TS_RESP_get_status_info( resp );
-    if( ( ASN1_INTEGER_get( TS_STATUS_INFO_get0_status( si ) ) != TS_STATUS_GRANTED &&
-          !TS_STATUS_INFO_get0_failure_info( si ) ) ||
-        ( len = i2d_TS_RESP( resp, &buf ) ) <= 0 )
+    if( ASN1_INTEGER_get( TS_STATUS_INFO_get0_status( si ) ) != TS_STATUS_GRANTED &&
+        !TS_STATUS_INFO_get0_failure_info( si ) )
+        goto end;
+    if( TS_RESP_get_token( resp ) && EVP_PKEY_get_base_id( key->pkey ) == EVP_PKEY_EC )
+    {
+        X509_ALGOR * alg;
+        PKCS7_SIGNER_INFO_get0_algs( sk_PKCS7_SIGNER_INFO_value( PKCS7_get_signer_info( TS_RESP_get_token( resp ) ), 0 ),
+                                     NULL, NULL, &alg );
+        mp_ec_sig_alg( alg );
+    }
+    if( ( len = i2d_TS_RESP( resp, &buf ) ) <= 0 )
         goto end;
     OPENSSL_free( key->tsr );
     key->tsr = buf;

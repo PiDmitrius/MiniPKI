@@ -149,6 +149,10 @@ struct MP_OCSP_RESP_S
 const EVP_MD * mp_md( const char * alg );
 /* mp_key.c: the digest mp_key_sign signs over with pkey */
 const EVP_MD * mp_key_md( EVP_PKEY * pkey );
+/* mp_key.c: names an EC signature in a SignerInfo id-ecPublicKey, as RFC
+   3278 and CryptoPro CSP do: CryptoPro CSP 5.0 verifies no ecdsa-with-SHA*
+   there (0x80090008), and the name is not signed */
+void mp_ec_sig_alg( X509_ALGOR * alg );
 /* mp_key.c: certificates as a stack, MP_ERR_PARSE for one that does not
    parse */
 int32_t mp_x509_stack( const uint8_t * const * certs, const size_t * lens, size_t n,

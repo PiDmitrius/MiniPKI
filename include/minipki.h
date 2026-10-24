@@ -326,16 +326,19 @@ MP_API int32_t mp_key_pkcs12( MP_KEY key,
  * key, whose certificate signer has the time-stamping key purpose, with
  * the certificates certs, under the policy of the dotted OID policy, with
  * the serial number of the big-endian serial and the current time to a
- * second, accurate to a second, signed over the hash mp_key_sign takes and
- * naming the signer certificate by that hash. A request of bad form, with
+ * second, accurate to a second, signed over the digest of the dotted OID
+ * digest that mp_digest takes, or with NULL the one of mp_key_sign, and
+ * naming the signer certificate by that digest; an EC signature is named as
+ * by mp_cms_sign. A request of bad form, with
  * a hash mp_digest does not take, or for another policy gets a rejection.
  * Valid until the next response of the key; MP_ERR_PARSE for a certificate
- * that does not parse, MP_ERR_OPENSSL for signer not of the key or a
- * response OpenSSL fails to make. */
+ * that does not parse, MP_ERR_INVALID_ARG for a digest mp_digest does not
+ * take, MP_ERR_OPENSSL for signer not of the key or a response OpenSSL
+ * fails to make. */
 MP_API int32_t mp_key_tsp_reply( MP_KEY key,
                                  const uint8_t * signer, size_t signerlen,
                                  const uint8_t * const * certs, const size_t * certlens,
-                                 size_t ncerts, const char * policy,
+                                 size_t ncerts, const char * policy, const char * digest,
                                  const uint8_t * serial, size_t seriallen,
                                  const uint8_t * req, size_t reqlen,
                                  const uint8_t ** der, size_t * derlen );
@@ -353,7 +356,8 @@ MP_API int32_t mp_cms_verify( MP_CTX ctx,
 /* Signs content of the given content type (a dotted OID, NULL for id-data)
  * with key, whose certificate is signer, into a DER CMS SignedData holding
  * the content and exactly the certificates certs, which need not include
- * signer. */
+ * signer. An EC signature is named id-ecPublicKey, as RFC 3278 does: the
+ * name CryptoPro CSP verifies. */
 MP_API int32_t mp_cms_sign( MP_KEY key,
                             const uint8_t * signer, size_t signerlen,
                             const char * content_type,

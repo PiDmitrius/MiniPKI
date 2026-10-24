@@ -1,4 +1,4 @@
-/* mp_key.c - signing keys: GOST R 34.10-2012 256-bit and PKCS#8 */
+/* mp_key.c - signing keys: GOST R 34.10-2012 and PKCS#8 */
 #include "mp_internal.h"
 #include <limits.h>
 
@@ -6,9 +6,10 @@
    deprecated EVP_PKEY_get0. */
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
-/* A GOST engine key on the CryptoPro-A parameter set: a fresh one, or with
-   raw, the one with that private scalar and its public point. */
-static int32_t key_make( const uint8_t * raw, MP_KEY * key )
+/* A GOST engine key of the raw length rawlen, 256-bit on the CryptoPro-A
+   parameter set or 512-bit on TC26 A: a fresh one, or with raw, the one
+   with that private scalar and its public point. */
+static int32_t key_make( const uint8_t * raw, size_t rawlen, MP_KEY * key )
 {
     EVP_PKEY_CTX * pctx;
     EVP_PKEY * pkey = NULL;
@@ -16,7 +17,8 @@ static int32_t key_make( const uint8_t * raw, MP_KEY * key )
     int ok;
 
     ERR_set_mark();
-    pctx = EVP_PKEY_CTX_new_id( NID_id_GostR3410_2012_256, NULL );
+    pctx = EVP_PKEY_CTX_new_id( rawlen == MP_KEY_RAW_LEN ? NID_id_GostR3410_2012_256
+                                                         : NID_id_GostR3410_2012_512, NULL );
     ok = pctx != NULL;
     if( raw )
         ok = ok && EVP_PKEY_paramgen_init( pctx ) > 0 &&
@@ -33,7 +35,7 @@ static int32_t key_make( const uint8_t * raw, MP_KEY * key )
     ok = group != NULL;
     if( ok && raw )
     {
-        BIGNUM * d = BN_lebin2bn( raw, MP_KEY_RAW_LEN, BN_secure_new() );
+        BIGNUM * d = BN_lebin2bn( raw, (int)rawlen, BN_secure_new() );
         EC_POINT * q = EC_POINT_new( group );
         ok = d && q && !BN_is_zero( d ) &&
              BN_cmp( d, EC_GROUP_get0_order( group ) ) < 0 &&
@@ -47,7 +49,7 @@ static int32_t key_make( const uint8_t * raw, MP_KEY * key )
     k = ok ? calloc( 1, sizeof( *k ) ) : NULL;
     if( !k ||
         BN_bn2lebinpad( EC_KEY_get0_private_key( ec ),
-                        k->raw, MP_KEY_RAW_LEN ) != MP_KEY_RAW_LEN )
+                        k->raw, (int)rawlen ) != (int)rawlen )
     {
         ERR_pop_to_mark();
         free( k );
@@ -58,6 +60,7 @@ static int32_t key_make( const uint8_t * raw, MP_KEY * key )
 
     k->pkey = pkey;
     k->gost = 1;
+    k->rawlen = rawlen;
     *key = k;
     return MP_OK;
 }
@@ -66,16 +69,23 @@ MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key )
 {
     if( !ctx || !key )
         return MP_ERR_INVALID_ARG;
-    return key_make( NULL, key );
+    return key_make( NULL, MP_KEY_RAW_LEN, key );
+}
+
+MP_API int32_t mp_key_generate_gost( MP_CTX ctx, int32_t bits, MP_KEY * key )
+{
+    if( !ctx || ( bits != 256 && bits != 512 ) || !key )
+        return MP_ERR_INVALID_ARG;
+    return key_make( NULL, bits == 256 ? MP_KEY_RAW_LEN : MP_KEY_RAW_LEN_512, key );
 }
 
 MP_API int32_t mp_key_import( MP_CTX ctx,
                               const uint8_t * raw, size_t rawlen,
                               MP_KEY * key )
 {
-    if( !ctx || !raw || rawlen != MP_KEY_RAW_LEN || !key )
+    if( !ctx || !raw || ( rawlen != MP_KEY_RAW_LEN && rawlen != MP_KEY_RAW_LEN_512 ) || !key )
         return MP_ERR_INVALID_ARG;
-    return key_make( raw, key );
+    return key_make( raw, rawlen, key );
 }
 
 MP_API int32_t mp_key_import_pkcs8( MP_CTX ctx,
@@ -134,7 +144,7 @@ MP_API int32_t mp_key_raw( MP_KEY key,
         return MP_ERR_INVALID_ARG;
 
     *raw = key->raw;
-    *rawlen = MP_KEY_RAW_LEN;
+    *rawlen = key->rawlen;
     return MP_OK;
 }
 
@@ -161,21 +171,15 @@ MP_API int32_t mp_key_spki( MP_KEY key,
     return MP_OK;
 }
 
-MP_API int32_t mp_key_sign( MP_KEY key,
-                            const uint8_t * data, size_t datalen,
-                            const uint8_t ** sig, size_t * siglen )
+static int32_t key_sign( MP_KEY key, const EVP_MD * md,
+                         const uint8_t * data, size_t datalen,
+                         const uint8_t ** sig, size_t * siglen )
 {
     EVP_MD_CTX * mctx;
-    const EVP_MD * md;
     size_t len = 0;
     uint8_t * buf = NULL;
     int ok;
 
-    if( !key || ( !data && datalen ) || !sig || !siglen )
-        return MP_ERR_INVALID_ARG;
-
-    md = EVP_PKEY_get_base_id( key->pkey ) == NID_id_GostR3410_2012_256
-         ? EVP_get_digestbynid( NID_id_GostR3411_2012_256 ) : EVP_sha256();
     ERR_set_mark();
     mctx = EVP_MD_CTX_new();
     ok = md && mctx &&
@@ -195,4 +199,33 @@ MP_API int32_t mp_key_sign( MP_KEY key,
     *sig = buf;
     *siglen = len;
     return MP_OK;
+}
+
+MP_API int32_t mp_key_sign( MP_KEY key,
+                            const uint8_t * data, size_t datalen,
+                            const uint8_t ** sig, size_t * siglen )
+{
+    const EVP_MD * md;
+
+    if( !key || ( !data && datalen ) || !sig || !siglen )
+        return MP_ERR_INVALID_ARG;
+
+    switch( EVP_PKEY_get_base_id( key->pkey ) )
+    {
+    case NID_id_GostR3410_2012_256: md = EVP_get_digestbynid( NID_id_GostR3411_2012_256 ); break;
+    case NID_id_GostR3410_2012_512: md = EVP_get_digestbynid( NID_id_GostR3411_2012_512 ); break;
+    default: md = EVP_sha256();
+    }
+    return key_sign( key, md, data, datalen, sig, siglen );
+}
+
+MP_API int32_t mp_key_sign_digest( MP_KEY key, const char * alg,
+                                   const uint8_t * data, size_t datalen,
+                                   const uint8_t ** sig, size_t * siglen )
+{
+    const EVP_MD * md;
+
+    if( !key || !alg || ( !data && datalen ) || !sig || !siglen || !( md = mp_md( alg ) ) )
+        return MP_ERR_INVALID_ARG;
+    return key_sign( key, md, data, datalen, sig, siglen );
 }

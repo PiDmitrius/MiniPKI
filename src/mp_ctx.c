@@ -101,34 +101,50 @@ MP_API int32_t mp_close( MP_CTX ctx )
     return MP_OK;
 }
 
-MP_API int32_t mp_digest( MP_CTX ctx, const char * alg, const uint8_t * data, size_t datalen,
-                          uint8_t md[ MP_DIGEST_MAX ], size_t * mdlen )
+/* The fixed-length digest OpenSSL can compute that the dotted OID alg names,
+   NULL for none; a signature OID finds its digest too, and a digest without
+   an implementation fails to init. Leaves the OpenSSL errors as they were. */
+const EVP_MD * mp_md( const char * alg )
 {
     ASN1_OBJECT * obj;
     const EVP_MD * m = NULL;
-    EVP_MD_CTX * c = NULL;
-    unsigned int n = 0;
-    int nid, rc = MP_ERR_INVALID_ARG;
-
-    if( !ctx || !alg || ( !data && datalen ) || !md || !mdlen )
-        return MP_ERR_INVALID_ARG;
+    EVP_MD_CTX * c;
+    int nid;
 
     ERR_set_mark();
     obj = OBJ_txt2obj( alg, 1 );
     nid = OBJ_obj2nid( obj );
     ASN1_OBJECT_free( obj );
-    /* A signature OID finds its digest too; a digest without an
-       implementation fails to init */
     if( nid != NID_undef )
         m = EVP_get_digestbynid( nid );
-    if( m && EVP_MD_get_type( m ) == nid && !( EVP_MD_get_flags( m ) & EVP_MD_FLAG_XOF ) &&
-        EVP_MD_get_size( m ) > 0 && EVP_MD_get_size( m ) <= MP_DIGEST_MAX &&
-        ( c = EVP_MD_CTX_new() ) && EVP_DigestInit_ex( c, m, NULL ) )
-        rc = EVP_DigestUpdate( c, data, datalen ) && EVP_DigestFinal_ex( c, md, &n ) ? MP_OK : MP_ERR_OPENSSL;
+    if( m && ( EVP_MD_get_type( m ) != nid || ( EVP_MD_get_flags( m ) & EVP_MD_FLAG_XOF ) ||
+               EVP_MD_get_size( m ) <= 0 || EVP_MD_get_size( m ) > MP_DIGEST_MAX ) )
+        m = NULL;
+    c = m ? EVP_MD_CTX_new() : NULL;
+    if( m && !( c && EVP_DigestInit_ex( c, m, NULL ) ) )
+        m = NULL;
     EVP_MD_CTX_free( c );
     ERR_pop_to_mark();
+    return m;
+}
 
-    if( rc == MP_OK )
-        *mdlen = n;
-    return rc;
+MP_API int32_t mp_digest( MP_CTX ctx, const char * alg, const uint8_t * data, size_t datalen,
+                          uint8_t md[ MP_DIGEST_MAX ], size_t * mdlen )
+{
+    const EVP_MD * m;
+    unsigned int n = 0;
+    int ok;
+
+    if( !ctx || !alg || ( !data && datalen ) || !md || !mdlen )
+        return MP_ERR_INVALID_ARG;
+    if( !( m = mp_md( alg ) ) )
+        return MP_ERR_INVALID_ARG;
+
+    ERR_set_mark();
+    ok = EVP_Digest( data, datalen, md, &n, m, NULL );
+    ERR_pop_to_mark();
+    if( !ok )
+        return MP_ERR_OPENSSL;
+    *mdlen = n;
+    return MP_OK;
 }

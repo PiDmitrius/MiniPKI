@@ -143,11 +143,15 @@ struct MP_OCSP_RESP_S
 
 /* ── Key ─────────────────────────────────────────────────── */
 
+/* mp_ctx.c: the digest of a dotted OID that mp_digest takes, or NULL */
+const EVP_MD * mp_md( const char * alg );
+
 struct MP_KEY_S
 {
     EVP_PKEY      * pkey;
     int             gost;         /* has raw */
-    uint8_t         raw[ MP_KEY_RAW_LEN ];
+    uint8_t         raw[ MP_KEY_RAW_LEN_512 ];
+    size_t          rawlen;
     /* the last signature */
     uint8_t       * sig;
     /* cached SubjectPublicKeyInfo DER, on demand */

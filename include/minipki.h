@@ -263,14 +263,18 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
 
 /* -- Key ----------------------------------------------------------- */
 
-/* A signing key: a GOST R 34.10-2012 256-bit key on the CryptoPro-A
- * parameter set, generated or imported from its raw form, the 32-byte
- * little-endian private scalar as in its PKCS#8 (these need the GOST engine,
+/* A signing key: a GOST R 34.10-2012 key, 256-bit on the CryptoPro-A
+ * parameter set or 512-bit on the TC26 A one, generated or imported from
+ * its raw form, the little-endian private scalar as in its PKCS#8, of
+ * MP_KEY_RAW_LEN or MP_KEY_RAW_LEN_512 bytes (these need the GOST engine,
  * see mp_open); or an RSA or EC key imported from PKCS#8, other PKCS#8 keys
- * being MP_ERR_PARSE. */
-#define MP_KEY_RAW_LEN  32
+ * being MP_ERR_PARSE. mp_key_generate makes a 256-bit GOST key,
+ * mp_key_generate_gost one of bits 256 or 512. */
+#define MP_KEY_RAW_LEN      32
+#define MP_KEY_RAW_LEN_512  64
 
 MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );
+MP_API int32_t mp_key_generate_gost( MP_CTX ctx, int32_t bits, MP_KEY * key );
 MP_API int32_t mp_key_import( MP_CTX ctx,
                               const uint8_t * raw, size_t rawlen,
                               MP_KEY * key );
@@ -287,14 +291,21 @@ MP_API int32_t mp_key_raw( MP_KEY key,
 MP_API int32_t mp_key_spki( MP_KEY key,
                             const uint8_t ** der, size_t * derlen );
 
-/* Signs data over the GOST R 34.11-2012 256-bit hash for a GOST key and
- * SHA-256 for others. The signature is the signatureValue of X.509
- * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256,
- * sha256WithRSAEncryption or ecdsa-with-SHA256, valid until the next
- * mp_key_sign on the key. */
+/* Signs data over the GOST R 34.11-2012 hash of the key's size for a GOST
+ * key and SHA-256 for others. The signature is the signatureValue of X.509
+ * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256
+ * or -512, sha256WithRSAEncryption or ecdsa-with-SHA256, valid until the
+ * next signature by the key. */
 MP_API int32_t mp_key_sign( MP_KEY key,
                             const uint8_t * data, size_t datalen,
                             const uint8_t ** sig, size_t * siglen );
+/* Signs as mp_key_sign over the digest of the dotted OID alg that
+ * mp_digest takes, such as SHA-384 for ecdsa-with-SHA384;
+ * MP_ERR_INVALID_ARG for an OID mp_digest does not take, MP_ERR_OPENSSL for
+ * a digest the key does not sign over. */
+MP_API int32_t mp_key_sign_digest( MP_KEY key, const char * alg,
+                                   const uint8_t * data, size_t datalen,
+                                   const uint8_t ** sig, size_t * siglen );
 
 /* -- CMS ----------------------------------------------------------- */
 

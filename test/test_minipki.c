@@ -23,6 +23,7 @@
 #include "minipki.h"
 #include <openssl/ocsp.h>
 #include <openssl/pem.h>
+#include <openssl/err.h>
 
 /* Cross-platform temp path for generated test cert */
 #ifdef _WIN32
@@ -713,6 +714,7 @@ static int test_hardening( void )
         OCSP_BASICRESP * bs = OCSP_BASICRESP_new();
         OCSP_CERTID * id = lx && ix ? OCSP_cert_to_id( EVP_sha256(), lx, ix ) : NULL;
         OCSP_RESPONSE * or = NULL;
+        ASN1_TIME * at = X509_gmtime_adj( NULL, 0 );
         uint8_t * der = NULL;
         int derlen = -1;
         if( rx && rk && ix && ik && bs && id )
@@ -721,12 +723,12 @@ static int test_hardening( void )
             ext = X509V3_EXT_conf_nid( NULL, &v3, eku ? NID_ext_key_usage : NID_key_usage,
                                        eku ? "OCSPSigning" : "digitalSignature" );
         }
-        if( ext && X509_set_version( rx, X509_VERSION_3 ) && ASN1_INTEGER_set( X509_get_serialNumber( rx ), 77 ) &&
+        if( ext && at && X509_set_version( rx, X509_VERSION_3 ) && ASN1_INTEGER_set( X509_get_serialNumber( rx ), 77 ) &&
             X509_set_issuer_name( rx, X509_get_subject_name( ix ) ) && X509_NAME_add_entry_by_txt( X509_get_subject_name( rx ), "CN", MBSTRING_ASC,
                                         (const unsigned char *)"OCSP responder", -1, -1, 0 ) &&
             X509_gmtime_adj( X509_getm_notBefore( rx ), -60 ) && X509_gmtime_adj( X509_getm_notAfter( rx ), 86400 ) &&
             X509_set_pubkey( rx, rk ) && X509_add_ext( rx, ext, -1 ) && X509_sign( rx, ik, EVP_sha256() ) &&
-            OCSP_basic_add1_status( bs, id, V_OCSP_CERTSTATUS_GOOD, 0, NULL, X509_gmtime_adj( NULL, 0 ), NULL ) &&
+            OCSP_basic_add1_status( bs, id, V_OCSP_CERTSTATUS_GOOD, 0, NULL, at, NULL ) &&
             OCSP_basic_sign( bs, rx, rk, EVP_sha256(), NULL, 0 ) &&
             ( or = OCSP_response_create( OCSP_RESPONSE_STATUS_SUCCESSFUL, bs ) ) )
             derlen = i2d_OCSP_RESPONSE( or, &der );
@@ -742,6 +744,7 @@ static int test_hardening( void )
         CHECK( mp_ocsp_response_close( resp ), "mp_ocsp_response_close" );
         OPENSSL_free( der );
         OCSP_RESPONSE_free( or );
+        ASN1_TIME_free( at );
         OCSP_BASICRESP_free( bs );
         OCSP_CERTID_free( id );
         X509_EXTENSION_free( ext );
@@ -1319,6 +1322,82 @@ static int test_pkcs8_keys( void )
     CHECK( mp_close( ctx ), "mp_close" );
     return 0;
 }
+
+static int test_request_verify( void )
+{
+    const char * keys[] = {
+        "gost2012_256 -pkeyopt paramset:A", "gost2012_512 -pkeyopt paramset:A",
+        "rsa:2048", "ec -pkeyopt ec_paramgen_curve:P-256"
+    };
+    MP_CTX ctx = NULL;
+    const uint8_t junk[] = "not a request";
+
+    printf( "\n[10] PKCS#10 signature verification\n" );
+    CHECK( mp_open( MP_TYPE_OPENSSL, &ctx ), "mp_open" );
+    EXPECT( mp_request_verify( NULL, junk, sizeof( junk ) ), MP_ERR_INVALID_ARG,
+            "mp_request_verify(NULL context)" );
+    EXPECT( mp_request_verify( ctx, NULL, sizeof( junk ) ), MP_ERR_INVALID_ARG,
+            "mp_request_verify(NULL data)" );
+    EXPECT( mp_request_verify( ctx, junk, 0 ), MP_ERR_INVALID_ARG,
+            "mp_request_verify(zero length)" );
+    EXPECT( mp_request_verify( ctx, NULL, 0 ), MP_ERR_INVALID_ARG,
+            "mp_request_verify(NULL/0)" );
+
+    for( size_t i = 0; i < sizeof( keys ) / sizeof( keys[0] ); i++ )
+    {
+        if( i < 2 && !getenv( "MINIPKI_GOST_ENGINE" ) )
+        {
+            printf( "  SKIP: %s: MINIPKI_GOST_ENGINE not set\n", keys[i] );
+            continue;
+        }
+        char cmd[512];
+        snprintf( cmd, sizeof( cmd ),
+                  "openssl req -new -newkey %s -nodes -keyout " DEV_NULL
+                  " -subj /CN=Request -outform DER -out /tmp/test_minipki_request.der " REDIR_NULL,
+                  keys[i] );
+        EXPECT( system( cmd ), 0, "generate PKCS#10 request" );
+        printf( "  Algorithm: %s\n", keys[i] );
+        size_t n = 0;
+        uint8_t * der = read_file( "/tmp/test_minipki_request.der", &n );
+        EXPECT( der != NULL && n > 7, 1, "read PKCS#10 request" );
+        ERR_clear_error();
+        EXPECT( mp_request_verify( ctx, der, n ), MP_OK, "mp_request_verify(valid)" );
+        EXPECT( ERR_peek_error() == 0, 1, "valid request leaves no OpenSSL error" );
+
+        der[n - 1] ^= 1;
+        EXPECT( mp_request_verify( ctx, der, n ), MP_ERR_VERIFY, "mp_request_verify(changed signature)" );
+        EXPECT( ERR_peek_error() == 0, 1, "invalid signature leaves no OpenSSL error" );
+        der[n - 1] ^= 1;
+        size_t subject = 0;
+        while( subject + 7 <= n && memcmp( der + subject, "Request", 7 ) != 0 )
+            subject++;
+        EXPECT( subject + 7 <= n, 1, "find request Subject" );
+        der[subject] ^= 1;
+        EXPECT( mp_request_verify( ctx, der, n ), MP_ERR_VERIFY, "mp_request_verify(changed Subject)" );
+        EXPECT( ERR_peek_error() == 0, 1, "changed Subject leaves no OpenSSL error" );
+        der[subject] ^= 1;
+
+        uint8_t * padded = malloc( n + 1 );
+        EXPECT( padded != NULL, 1, "allocate DER with trailer" );
+        memcpy( padded, der, n );
+        padded[n] = 0;
+        EXPECT( mp_request_verify( ctx, padded, n + 1 ), MP_ERR_PARSE, "mp_request_verify(DER with trailer)" );
+        EXPECT( ERR_peek_error() == 0, 1, "DER trailer leaves no OpenSSL error" );
+        free( padded );
+        EXPECT( mp_request_verify( ctx, junk, sizeof( junk ) ), MP_ERR_PARSE, "mp_request_verify(garbage)" );
+        EXPECT( ERR_peek_error() == 0, 1, "garbage leaves no OpenSSL error" );
+
+        ERR_raise( ERR_LIB_USER, 1 );
+        unsigned long saved = ERR_peek_error();
+        EXPECT( mp_request_verify( ctx, junk, sizeof( junk ) ), MP_ERR_PARSE, "mp_request_verify(garbage with prior error)" );
+        EXPECT( ERR_get_error() == saved && ERR_peek_error() == 0, 1, "preserve caller's OpenSSL error" );
+        EXPECT( mp_request_verify( ctx, der, n ), MP_OK, "mp_request_verify(valid after failures)" );
+        free( der );
+    }
+    remove( "/tmp/test_minipki_request.der" );
+    CHECK( mp_close( ctx ), "mp_close" );
+    return 0;
+}
 #endif
 
 static int test_error_handling( void )
@@ -1352,6 +1431,7 @@ int main( void )
     rc |= test_hardening();
     rc |= test_key();
     rc |= test_pkcs8_keys();
+    rc |= test_request_verify();
 #endif
     rc |= test_error_handling();
 

@@ -87,6 +87,12 @@ MP_API int32_t mp_digest( MP_CTX ctx, const char * alg,
 
 /* -- Certificate --------------------------------------------------- */
 
+/* Verifies a DER PKCS#10 request with its own public key. The DER must be
+ * consumed exactly; MP_ERR_PARSE for malformed input, MP_ERR_VERIFY for
+ * an invalid signature or a key/signature algorithm that cannot verify. */
+MP_API int32_t mp_request_verify( MP_CTX ctx,
+                                  const uint8_t * der, size_t derlen );
+
 MP_API int32_t mp_cert_parse( MP_CTX ctx,
                               const uint8_t * data, size_t datalen,
                               MP_CERT * cert );

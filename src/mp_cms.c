@@ -65,7 +65,8 @@ MP_API int32_t mp_cms_verify( MP_CTX ctx,
         rc = MP_ERR_UNEXPECTED;
         goto end;
     }
-    memcpy( c->content, mem->data, mem->length );
+    if( mem->length )
+        memcpy( c->content, mem->data, mem->length );
 
     *cms = c;
     c = NULL;
@@ -176,6 +177,12 @@ MP_API int32_t mp_cms_sign( MP_KEY key,
     if( ( type && !CMS_set1_eContentType( ci, type ) ) ||
         !CMS_final( ci, in, NULL, CMS_BINARY ) )
         goto end;
+    if( EVP_PKEY_get_base_id( key->pkey ) == EVP_PKEY_EC )
+    {
+        X509_ALGOR * alg;
+        CMS_SignerInfo_get0_algs( sk_CMS_SignerInfo_value( CMS_get0_SignerInfos( ci ), 0 ), NULL, NULL, NULL, &alg );
+        mp_ec_sig_alg( alg );
+    }
 
     c = calloc( 1, sizeof( *c ) );
     if( !c )

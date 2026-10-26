@@ -6,6 +6,32 @@ static PKCS7 * d2i_pkcs7_exact( const uint8_t * data, size_t datalen );
 
 static const char hex_digits[] = "0123456789ABCDEF";
 
+MP_API int32_t mp_request_verify( MP_CTX ctx,
+                                  const uint8_t * der, size_t derlen )
+{
+    if( !ctx || !der || !derlen || derlen > LONG_MAX )
+        return MP_ERR_INVALID_ARG;
+
+    const unsigned char * p = der;
+    EVP_PKEY * key = NULL;
+    int32_t rc = MP_ERR_PARSE;
+    ERR_set_mark();
+    X509_REQ * req = d2i_X509_REQ( NULL, &p, (long)derlen );
+    if( !req || p != der + derlen )
+        goto end;
+
+    key = X509_REQ_get_pubkey( req );
+    int valid = key && X509_REQ_get_version( req ) == 0 &&
+                X509_REQ_verify( req, key ) == 1;
+    rc = valid ? MP_OK : MP_ERR_VERIFY;
+
+end:
+    EVP_PKEY_free( key );
+    X509_REQ_free( req );
+    ERR_pop_to_mark();
+    return rc;
+}
+
 char * mp_octet_to_hex( const ASN1_OCTET_STRING * oct )
 {
     int len;

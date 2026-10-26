@@ -7,7 +7,7 @@
 
 /* Version */
 #define MP_VERSION_MAJOR 3
-#define MP_VERSION_MINOR 0
+#define MP_VERSION_MINOR 1
 #define MP_VERSION_PATCH 0
 
 #define MP_VERSION \
@@ -73,7 +73,25 @@ MP_API uint32_t mp_version( void );
 MP_API int32_t mp_open( int32_t type, MP_CTX * ctx );
 MP_API int32_t mp_close( MP_CTX ctx );
 
+/* -- Digest -------------------------------------------------------- */
+
+/* Hashes data with the digest named by the dotted OID alg, such as SHA-256
+ * or GOST R 34.11-2012 (which needs the GOST engine, see mp_open), into md;
+ * MP_ERR_INVALID_ARG for an OID of no fixed-length digest OpenSSL can
+ * compute. */
+#define MP_DIGEST_MAX   64
+
+MP_API int32_t mp_digest( MP_CTX ctx, const char * alg,
+                          const uint8_t * data, size_t datalen,
+                          uint8_t md[ MP_DIGEST_MAX ], size_t * mdlen );
+
 /* -- Certificate --------------------------------------------------- */
+
+/* Verifies a DER PKCS#10 request with its own public key. The DER must be
+ * consumed exactly; MP_ERR_PARSE for malformed input, MP_ERR_VERIFY for
+ * an invalid signature or a key/signature algorithm that cannot verify. */
+MP_API int32_t mp_request_verify( MP_CTX ctx,
+                                  const uint8_t * der, size_t derlen );
 
 MP_API int32_t mp_cert_parse( MP_CTX ctx,
                               const uint8_t * data, size_t datalen,
@@ -251,14 +269,18 @@ MP_API int32_t mp_ocsp_der( MP_OCSP_RESP resp,
 
 /* -- Key ----------------------------------------------------------- */
 
-/* A signing key: a GOST R 34.10-2012 256-bit key on the CryptoPro-A
- * parameter set, generated or imported from its raw form, the 32-byte
- * little-endian private scalar as in its PKCS#8 (these need the GOST engine,
+/* A signing key: a GOST R 34.10-2012 key, 256-bit on the CryptoPro-A
+ * parameter set or 512-bit on the TC26 A one, generated or imported from
+ * its raw form, the little-endian private scalar as in its PKCS#8, of
+ * MP_KEY_RAW_LEN or MP_KEY_RAW_LEN_512 bytes (these need the GOST engine,
  * see mp_open); or an RSA or EC key imported from PKCS#8, other PKCS#8 keys
- * being MP_ERR_PARSE. */
-#define MP_KEY_RAW_LEN  32
+ * being MP_ERR_PARSE. mp_key_generate makes a 256-bit GOST key,
+ * mp_key_generate_gost one of bits 256 or 512. */
+#define MP_KEY_RAW_LEN      32
+#define MP_KEY_RAW_LEN_512  64
 
 MP_API int32_t mp_key_generate( MP_CTX ctx, MP_KEY * key );
+MP_API int32_t mp_key_generate_gost( MP_CTX ctx, int32_t bits, MP_KEY * key );
 MP_API int32_t mp_key_import( MP_CTX ctx,
                               const uint8_t * raw, size_t rawlen,
                               MP_KEY * key );
@@ -275,14 +297,57 @@ MP_API int32_t mp_key_raw( MP_KEY key,
 MP_API int32_t mp_key_spki( MP_KEY key,
                             const uint8_t ** der, size_t * derlen );
 
-/* Signs data over the GOST R 34.11-2012 256-bit hash for a GOST key and
- * SHA-256 for others. The signature is the signatureValue of X.509
- * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256,
- * sha256WithRSAEncryption or ecdsa-with-SHA256, valid until the next
- * mp_key_sign on the key. */
+/* Signs data over the GOST R 34.11-2012 hash of the key's size for a GOST
+ * key and SHA-256 for others. The signature is the signatureValue of X.509
+ * certificates and CRLs signed with id-tc26-signwithdigest-gost3410-12-256
+ * or -512, sha256WithRSAEncryption or ecdsa-with-SHA256, valid until the
+ * next signature by the key. */
 MP_API int32_t mp_key_sign( MP_KEY key,
                             const uint8_t * data, size_t datalen,
                             const uint8_t ** sig, size_t * siglen );
+/* Signs as mp_key_sign over the digest of the dotted OID alg that
+ * mp_digest takes, such as SHA-384 for ecdsa-with-SHA384;
+ * MP_ERR_INVALID_ARG for an OID mp_digest does not take, MP_ERR_OPENSSL for
+ * a digest the key does not sign over. */
+MP_API int32_t mp_key_sign_digest( MP_KEY key, const char * alg,
+                                   const uint8_t * data, size_t datalen,
+                                   const uint8_t ** sig, size_t * siglen );
+
+/* A PKCS#12 of key with its certificate cert and the certificates certs,
+ * under password: for a GOST key as TC26 sets it and CryptoPro CSP imports
+ * it, PBES2 with Kuznyechik-CTR-ACPKM-OMAC and PBKDF2 over HMAC GOST R
+ * 34.11-2012 512 and a MAC over GOST R 34.11-2012 512; for others PBES2
+ * with AES-256-CBC and PBKDF2 over HMAC SHA-256 and a MAC over SHA-256.
+ * Valid until the next PKCS#12 of the key; MP_ERR_PARSE for a certificate
+ * that does not parse, MP_ERR_OPENSSL for cert not of the key. */
+MP_API int32_t mp_key_pkcs12( MP_KEY key,
+                              const uint8_t * cert, size_t certlen,
+                              const uint8_t * const * certs, const size_t * certlens,
+                              size_t ncerts, const char * password,
+                              const uint8_t ** der, size_t * derlen );
+
+/* -- Time stamps --------------------------------------------------- */
+
+/* A time-stamp response (RFC 3161) to the DER request of reqlen bytes by
+ * key, whose certificate signer has the time-stamping key purpose, with
+ * the certificates certs, under the policy of the dotted OID policy, with
+ * the serial number of the big-endian serial and the current time to a
+ * second, accurate to a second, signed over the digest of the dotted OID
+ * digest that mp_digest takes, or with NULL the one of mp_key_sign, and
+ * naming the signer certificate by that digest; an EC signature is named as
+ * by mp_cms_sign. A request of bad form, with
+ * a hash mp_digest does not take, or for another policy gets a rejection.
+ * Valid until the next response of the key; MP_ERR_PARSE for a certificate
+ * that does not parse, MP_ERR_INVALID_ARG for a digest mp_digest does not
+ * take, MP_ERR_OPENSSL for signer not of the key or a response OpenSSL
+ * fails to make. */
+MP_API int32_t mp_key_tsp_reply( MP_KEY key,
+                                 const uint8_t * signer, size_t signerlen,
+                                 const uint8_t * const * certs, const size_t * certlens,
+                                 size_t ncerts, const char * policy, const char * digest,
+                                 const uint8_t * serial, size_t seriallen,
+                                 const uint8_t * req, size_t reqlen,
+                                 const uint8_t ** der, size_t * derlen );
 
 /* -- CMS ----------------------------------------------------------- */
 
@@ -297,7 +362,8 @@ MP_API int32_t mp_cms_verify( MP_CTX ctx,
 /* Signs content of the given content type (a dotted OID, NULL for id-data)
  * with key, whose certificate is signer, into a DER CMS SignedData holding
  * the content and exactly the certificates certs, which need not include
- * signer. */
+ * signer. An EC signature is named id-ecPublicKey, as RFC 3278 does: the
+ * name CryptoPro CSP verifies. */
 MP_API int32_t mp_cms_sign( MP_KEY key,
                             const uint8_t * signer, size_t signerlen,
                             const char * content_type,

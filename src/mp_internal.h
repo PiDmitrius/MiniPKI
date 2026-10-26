@@ -17,6 +17,8 @@
 #include <openssl/pkcs7.h>
 #include <openssl/cms.h>
 #include <openssl/provider.h>
+#include <openssl/pkcs12.h>
+#include <openssl/ts.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -143,13 +145,27 @@ struct MP_OCSP_RESP_S
 
 /* ── Key ─────────────────────────────────────────────────── */
 
+/* mp_ctx.c: the digest of a dotted OID that mp_digest takes, or NULL */
+const EVP_MD * mp_md( const char * alg );
+/* mp_key.c: the digest mp_key_sign signs over with pkey */
+const EVP_MD * mp_key_md( EVP_PKEY * pkey );
+/* mp_key.c: names an EC signature in a SignerInfo id-ecPublicKey, as RFC
+   3278 and CryptoPro CSP do: CryptoPro CSP 5.0 verifies no ecdsa-with-SHA*
+   there (0x80090008), and the name is not signed */
+void mp_ec_sig_alg( X509_ALGOR * alg );
+/* mp_key.c: certificates as a stack, MP_ERR_PARSE for one that does not
+   parse */
+int32_t mp_x509_stack( const uint8_t * const * certs, const size_t * lens, size_t n,
+                       STACK_OF(X509) ** stack );
+
 struct MP_KEY_S
 {
     EVP_PKEY      * pkey;
     int             gost;         /* has raw */
-    uint8_t         raw[ MP_KEY_RAW_LEN ];
-    /* the last signature */
-    uint8_t       * sig;
+    uint8_t         raw[ MP_KEY_RAW_LEN_512 ];
+    size_t          rawlen;
+    /* the last signature, PKCS#12 and time-stamp response */
+    uint8_t       * sig, * p12, * tsr;
     /* cached SubjectPublicKeyInfo DER, on demand */
     uint8_t       * spki;
     size_t          spkilen;
